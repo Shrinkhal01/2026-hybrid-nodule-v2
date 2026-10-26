@@ -1,0 +1,68 @@
+{
+  "config": {
+    "seed": 42,
+    "split_tries": 100,
+    "roi_size": 32,
+    "hu_window": [
+      -1000.0,
+      400.0
+    ],
+    "pad_hu": -1000.0,
+    "canonical_orientation": false,
+    "grouping_column": "series_uid",
+    "feature_columns": [
+      "mean_hu",
+      "std_hu",
+      "min_hu",
+      "max_hu",
+      "median_hu",
+      "p25_hu",
+      "p75_hu",
+      "iqr_hu",
+      "skewness",
+      "kurtosis",
+      "solid_fraction_pct",
+      "hyperdense_fraction_pct",
+      "diameter_mm",
+      "calcification",
+      "texture"
+    ]
+  },
+  "total_samples": 1000,
+  "class_counts": {
+    "benign_0": 554,
+    "malignant_1": 446
+  },
+  "dropped": {
+    "missing_malignancy": 0,
+    "indeterminate_score_3.0": 176,
+    "no_matching_volume": 0,
+    "missing_consensus_metadata": 0
+  },
+  "splits": {
+    "train": {
+      "n_samples": 703,
+      "benign_0": 389,
+      "malignant_1": 314,
+      "malignant_pct": 44.67,
+      "n_groups": 382,
+      "share_pct": 70.3
+    },
+    "val": {
+      "n_samples": 146,
+      "benign_0": 82,
+      "malignant_1": 64,
+      "malignant_pct": 43.84,
+      "n_groups": 82,
+      "share_pct": 14.6
+    },
+    "test": {
+      "n_samples": 151,
+      "benign_0": 83,
+      "malignant_1": 68,
+      "malignant_pct": 45.03,
+      "n_groups": 82,
+      "share_pct": 15.1
+    }
+  }
+}
