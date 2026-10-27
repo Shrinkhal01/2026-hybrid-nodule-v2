@@ -1,0 +1,157 @@
+{
+  "checkpoint": "/scratch/mtech_shrinkhal/2026-hybrid-nodule-v2/results/best_hybrid_net.pth",
+  "checkpoint_epoch": 19,
+  "checkpoint_val_auc": 0.9232088414634146,
+  "target_layer": "backbone.layer4[-1]",
+  "threshold": 0.554229199886322,
+  "threshold_source": "run_config.json (validation Youden's J)",
+  "n_test": 151,
+  "notes": [
+    "CAMs explain the model's predicted class (logit sign-flipped for predicted-benign cases).",
+    "Layer4 native resolution is 4x2x2 at 32^3 input; maps are coarse and trilinearly upsampled.",
+    "visual_gate_mean ~1 means the fusion gate favours the CT embedding over the tabular one.",
+    "Grad-CAM shows where the CNN branch's evidence lies; it does not explain the tabular branch."
+  ],
+  "cases": [
+    {
+      "case": 1,
+      "title": "TP: high-confidence malignant",
+      "rule": "true malignant, predicted malignant, highest P(malignant)",
+      "available": true,
+      "nodule_id": "1.3.6.1.4.1.14519.5.2.1.6279.6001.247816269490470394602288565775_356_233_362_0000",
+      "series_uid": "1.3.6.1.4.1.14519.5.2.1.6279.6001.247816269490470394602288565775",
+      "patch_path": "data/processed/patches/1.3.6.1.4.1.14519.5.2.1.6279.6001.247816269490470394602288565775_356_233_362_0000.npy",
+      "true_label": 1,
+      "malignancy_mean_score": 4.0,
+      "diameter_mm": 17.928187057499997,
+      "prob_malignant": 0.999998927116394,
+      "logit": 13.755374908447266,
+      "threshold": 0.554229199886322,
+      "predicted_label": 1,
+      "correct": true,
+      "explained_class": "malignant",
+      "visual_gate_mean": 0.5153548121452332,
+      "slice_index_d": 16,
+      "cam_native_shape_dhw": [
+        4,
+        2,
+        2
+      ],
+      "cam_all_zero": false,
+      "peak_voxel_dhw": [
+        19,
+        24,
+        24
+      ],
+      "peak_distance_from_center_vox": 12.519984025548915,
+      "mass_fraction_in_central_16cube": 0.1507752686738968,
+      "mean_activation_on_slice_16": 0.8039846420288086,
+      "fraction_voxels_above_0.5": 0.74310302734375
+    },
+    {
+      "case": 2,
+      "title": "TN: high-confidence benign",
+      "rule": "true benign, predicted benign, lowest P(malignant)",
+      "available": true,
+      "nodule_id": "1.3.6.1.4.1.14519.5.2.1.6279.6001.826812708000318290301835871780_156_183_167_0000",
+      "series_uid": "1.3.6.1.4.1.14519.5.2.1.6279.6001.826812708000318290301835871780",
+      "patch_path": "data/processed/patches/1.3.6.1.4.1.14519.5.2.1.6279.6001.826812708000318290301835871780_156_183_167_0000.npy",
+      "true_label": 0,
+      "malignancy_mean_score": 1.0,
+      "diameter_mm": 7.479055335000001,
+      "prob_malignant": 0.001696095452643931,
+      "logit": -6.377037525177002,
+      "threshold": 0.554229199886322,
+      "predicted_label": 0,
+      "correct": true,
+      "explained_class": "benign",
+      "visual_gate_mean": 0.5846956968307495,
+      "slice_index_d": 16,
+      "cam_native_shape_dhw": [
+        4,
+        2,
+        2
+      ],
+      "cam_all_zero": false,
+      "peak_voxel_dhw": [
+        20,
+        24,
+        24
+      ],
+      "peak_distance_from_center_vox": 12.835497652993435,
+      "mass_fraction_in_central_16cube": 0.14288680255413055,
+      "mean_activation_on_slice_16": 0.7025658488273621,
+      "fraction_voxels_above_0.5": 0.66552734375
+    },
+    {
+      "case": 3,
+      "title": "Subtle malignant (correct)",
+      "rule": "true malignant, predicted malignant, smallest diameter_mm (excluding case 1)",
+      "available": true,
+      "nodule_id": "1.3.6.1.4.1.14519.5.2.1.6279.6001.111258527162678142285870245028_109_358_144_0000",
+      "series_uid": "1.3.6.1.4.1.14519.5.2.1.6279.6001.111258527162678142285870245028",
+      "patch_path": "data/processed/patches/1.3.6.1.4.1.14519.5.2.1.6279.6001.111258527162678142285870245028_109_358_144_0000.npy",
+      "true_label": 1,
+      "malignancy_mean_score": 3.333333333333333,
+      "diameter_mm": 8.27056093,
+      "prob_malignant": 0.7522732019424438,
+      "logit": 1.1113221645355225,
+      "threshold": 0.554229199886322,
+      "predicted_label": 1,
+      "correct": true,
+      "explained_class": "malignant",
+      "visual_gate_mean": 0.517332911491394,
+      "slice_index_d": 16,
+      "cam_native_shape_dhw": [
+        4,
+        2,
+        2
+      ],
+      "cam_all_zero": false,
+      "peak_voxel_dhw": [
+        12,
+        24,
+        24
+      ],
+      "peak_distance_from_center_vox": 12.519984025548915,
+      "mass_fraction_in_central_16cube": 0.16676969826221466,
+      "mean_activation_on_slice_16": 0.6329834461212158,
+      "fraction_voxels_above_0.5": 0.4659423828125
+    },
+    {
+      "case": 4,
+      "title": "False positive",
+      "rule": "true benign, predicted malignant, highest P(malignant)",
+      "available": true,
+      "nodule_id": "1.3.6.1.4.1.14519.5.2.1.6279.6001.148447286464082095534651426689_314_205_98_0000",
+      "series_uid": "1.3.6.1.4.1.14519.5.2.1.6279.6001.148447286464082095534651426689",
+      "patch_path": "data/processed/patches/1.3.6.1.4.1.14519.5.2.1.6279.6001.148447286464082095534651426689_314_205_98_0000.npy",
+      "true_label": 0,
+      "malignancy_mean_score": 2.6666666666666665,
+      "diameter_mm": 5.428721496666667,
+      "prob_malignant": 0.9671574234962463,
+      "logit": 3.380636215209961,
+      "threshold": 0.554229199886322,
+      "predicted_label": 1,
+      "correct": false,
+      "explained_class": "malignant",
+      "visual_gate_mean": 0.5408015251159668,
+      "slice_index_d": 16,
+      "cam_native_shape_dhw": [
+        4,
+        2,
+        2
+      ],
+      "cam_all_zero": false,
+      "peak_voxel_dhw": [
+        19,
+        24,
+        24
+      ],
+      "peak_distance_from_center_vox": 12.519984025548915,
+      "mass_fraction_in_central_16cube": 0.15398985147476196,
+      "mean_activation_on_slice_16": 0.7309666872024536,
+      "fraction_voxels_above_0.5": 0.6356201171875
+    }
+  ]
+}
