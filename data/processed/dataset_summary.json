@@ -8,6 +8,8 @@
     "crop_mm": 32.0,
     "interpolation": "trilinear",
     "split_source": "data/processed/metadata.csv",
+    "patient_id_source": "pylidc 0.2.3",
+    "n_patients": 545,
     "n_padded_patches": 4,
     "max_pad_fraction": 0.125,
     "hu_window": [
@@ -16,7 +18,7 @@
     ],
     "pad_hu": -1000.0,
     "canonical_orientation": false,
-    "grouping_column": "series_uid",
+    "grouping_column": "patient_id",
     "feature_columns": [
       "mean_hu",
       "std_hu",
@@ -52,7 +54,7 @@
       "benign_0": 389,
       "malignant_1": 314,
       "malignant_pct": 44.67,
-      "n_groups": 382,
+      "n_groups": 381,
       "share_pct": 70.3
     },
     "val": {
