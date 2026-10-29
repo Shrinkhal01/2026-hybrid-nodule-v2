@@ -44,9 +44,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
+import importlib.util
 import json
 import logging
 import re
+import sqlite3
 import sys
 import urllib.request
 import zipfile
@@ -138,6 +141,9 @@ class Config:
     spacing_mm: float = TARGET_SPACING_MM
     crop_mm: float = CROP_MM
     keep_split: Optional[Path] = None
+    patient_check: bool = True          # Phase 7 step P: fill patient_id from pylidc
+    pylidc_db: Optional[Path] = None    # default: the database bundled with pylidc
+    patient_id_source: Optional[str] = None  # set by build_dataset, written to the summary
 
     @property
     def resample(self) -> bool:
@@ -541,6 +547,69 @@ def safe_filename(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(s))
 
 
+# --------------------------------------------------------------------------- #
+# 2b. Patient IDs from pylidc (Phase 7 step P)
+# --------------------------------------------------------------------------- #
+def find_pylidc_db(explicit: Optional[Path] = None) -> tuple[Path, str]:
+    """Path to pylidc's bundled annotation database + a label for the summary.
+
+    Only the SQLite file shipped inside the pylidc package is read (table `scans`:
+    one row per CT series with its patient_id). The package itself is not imported,
+    because the database is all we need and no DICOM images are required.
+    """
+    if explicit is not None:
+        if not explicit.exists():
+            raise FileNotFoundError(f"--pylidc-db {explicit} does not exist")
+        return explicit, f"sqlite:{explicit.name}"
+    spec = importlib.util.find_spec("pylidc")  # locates the package without running it
+    if spec is None or not spec.origin:
+        raise ModuleNotFoundError(
+            "pylidc is not installed. Run `pip install pylidc` (only its bundled annotation "
+            "database is used), pass --pylidc-db PATH, or skip with --no-patient-check.")
+    db = Path(spec.origin).parent / "pylidc.sqlite"
+    if not db.exists():
+        raise FileNotFoundError(f"pylidc is installed but {db} is missing")
+    try:
+        version = importlib.metadata.version("pylidc")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return db, f"pylidc {version}"
+
+
+def series_to_patient(db_path: Path) -> dict[str, str]:
+    """SeriesInstanceUID -> PatientID (e.g. 'LIDC-IDRI-0078') for every scan in the database."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)  # read-only
+    try:
+        rows = con.execute("SELECT series_instance_uid, patient_id FROM scans").fetchall()
+    finally:
+        con.close()
+    mapping: dict[str, str] = {}
+    for series, patient in rows:
+        if series in mapping and mapping[series] != patient:
+            raise ValueError(f"series {series} belongs to two patients in {db_path}")
+        mapping[series] = patient
+    return mapping
+
+
+def attach_patient_ids(meta: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """Fill `patient_id` from the series UID. Every series must be found (no silent gaps)."""
+    pid = meta["series_uid"].astype(str).map(mapping)
+    missing = meta.loc[pid.isna(), "series_uid"].unique()
+    if len(missing):
+        raise KeyError(f"{len(missing)} series not in the pylidc database, e.g. {list(missing[:3])}")
+    if meta["patient_id"].notna().any():  # metadata had its own IDs: they must agree
+        both = meta["patient_id"].notna()
+        clash = (meta.loc[both, "patient_id"].astype(str) != pid[both]).sum()
+        if clash:
+            raise ValueError(f"{clash} rows: metadata patient_id disagrees with pylidc")
+    meta = meta.copy()
+    meta["patient_id"] = pid
+    per_patient = meta.groupby("patient_id")["series_uid"].nunique()
+    log.info("Patient IDs from pylidc: %d series -> %d patients (%d with more than one series)",
+             meta["series_uid"].nunique(), len(per_patient), int((per_patient > 1).sum()))
+    return meta
+
+
 def build_dataset(cfg: Config) -> tuple[pd.DataFrame, dict[str, int]]:
     niftis, meta_path = resolve_raw_inputs(cfg)
     meta = canonicalize_metadata(load_metadata_raw(meta_path, cfg.column_names), cfg.column_map)
@@ -550,6 +619,13 @@ def build_dataset(cfg: Config) -> tuple[pd.DataFrame, dict[str, int]]:
     meta = match_volumes(meta, niftis, cfg.allow_index_order)
     dropped["no_matching_volume"] = int(meta["volume_path"].isna().sum())
     meta = meta[meta["volume_path"].notna()].copy()
+
+    # Phase 7 step P: the benchmark metadata has no PatientID -> take it from pylidc,
+    # so the grouping below (and the verification) works at patient level
+    cfg.patient_id_source = None
+    if cfg.patient_check:
+        db, cfg.patient_id_source = find_pylidc_db(cfg.pylidc_db)
+        meta = attach_patient_ids(meta, series_to_patient(db))
 
     # grouping key: PatientID is the stricter unit (a patient may own several series)
     if meta["patient_id"].notna().any():
@@ -718,6 +794,8 @@ def save_outputs(df: pd.DataFrame, dropped: dict[str, int], cfg: Config) -> None
                    "interpolation": {0: "nearest", 1: "trilinear", 3: "cubic"}.get(INTERP_ORDER, INTERP_ORDER)
                    if cfg.resample else None,
                    "split_source": str(cfg.keep_split) if cfg.keep_split else "grouped_split",
+                   "patient_id_source": cfg.patient_id_source,
+                   "n_patients": int(df["patient_id"].nunique()) if df["patient_id"].notna().any() else None,
                    "n_padded_patches": int((df["pad_fraction"] > 0).sum()),
                    "max_pad_fraction": float(df["pad_fraction"].max()),
                    "hu_window": [HU_MIN, HU_MAX], "pad_hu": PAD_HU, "canonical_orientation": cfg.canonical,
@@ -790,6 +868,17 @@ def run_verification(cfg: Config) -> bool:
     check(len(FEATURE_COLUMNS) == 15, "feature vector is not 15-dimensional")
     check(np.isfinite(feats).all(), f"{int((~np.isfinite(feats)).sum())} NaN/inf radiomic value(s)")
 
+    # Phase 7 step P: if the run filled patient IDs, every row must have one
+    patient_source = None
+    if summary_path.exists():
+        patient_source = json.loads(summary_path.read_text())["config"].get("patient_id_source")
+    if patient_source:
+        n_missing = int(all_df["patient_id"].isna().sum())
+        check(n_missing == 0, f"{n_missing} row(s) without patient_id although source is {patient_source}")
+        log.info("Patient-level check: %d patients (source: %s)", all_df["patient_id"].nunique(), patient_source)
+    else:
+        log.warning("No patient IDs recorded: disjointness is only checked per series/group.")
+
     # disjointness (pairwise, which is strictly stronger than the triple intersection)
     for col in ("group_id", "patient_id", "series_uid"):
         if all_df[col].isna().all():
@@ -853,6 +942,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--keep-split", type=Path, default=None,
                    help="Reuse the train/val/test assignment from an existing metadata.csv "
                         "(matched by nodule_id) instead of drawing a new split")
+    p.add_argument("--pylidc-db", type=Path, default=None,
+                   help="pylidc.sqlite to read patient IDs from (default: the one bundled with pylidc)")
+    p.add_argument("--no-patient-check", action="store_true",
+                   help="Do not fill patient_id from pylidc (legacy: group by SeriesInstanceUID)")
     p.add_argument("--inspect", action="store_true", help="Print metadata schema and exit")
     p.add_argument("--verify-only", action="store_true", help="Only run the self-check on existing outputs")
     return p.parse_args(argv)
@@ -868,6 +961,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         allow_index_order=args.allow_index_order, column_map=args.column_map,
         column_names=args.column_names,
         spacing_mm=args.spacing_mm, crop_mm=args.crop_mm, keep_split=args.keep_split,
+        patient_check=not args.no_patient_check, pylidc_db=args.pylidc_db,
     )
     log.info("Patch geometry: %s", f"{cfg.roi_size}^3 voxels of {cfg.spacing_mm} mm = {cfg.crop_mm} mm cube"
              if cfg.resample else f"legacy {ROI_SIZE}^3 voxel crop (no resampling)")

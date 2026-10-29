@@ -10,3 +10,4 @@ torch>=2.1
 torchvision>=0.16
 streamlit>=1.35
 pytest>=7.0
+pylidc>=0.2.3   # only its bundled annotation database is read (patient IDs)

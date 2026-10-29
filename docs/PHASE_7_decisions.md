@@ -39,3 +39,16 @@ Spec (write your own in `tests/my_resample.py`, without looking at the pipeline 
 - Return (crop float32 (N,N,N), pad_fraction = share of padded voxels).
 - Tests: `python -m pytest tests/test_resample.py -v` runs every test against your version too.
 - Status: NOT YET WRITTEN
+
+## Step P: patient IDs from pylidc + patient-level leakage check
+
+| Used | Why | Rejected alternative | Number that justified it |
+|---|---|---|---|
+| **pylidc's bundled database** (`pylidc.sqlite`, table `scans`) for SeriesInstanceUID → PatientID | the LUNA22 metadata has **no PatientID**; pylidc maps every LIDC scan to its patient without downloading DICOMs → also meets the "use pylidc" ground rule | TCIA metadata CSV download; keep series-level only | 1,018 scans → 1,010 patients in the database; your 546 series → **545 patients**, **1** with 2 series, **0** patients across splits (one-off check with pylidc 0.2.3; the pipeline now logs this on every run) |
+| **Read the SQLite file directly**, don't `import pylidc` | the database is all we need; importing pylidc also loads DICOM/plot code it doesn't need here | `pylidc.query(pl.Scan)` | NOT MEASURED (whether `import pylidc` works with your numpy/SQLAlchemy versions) |
+| **Unknown series = error**, not a blank | a silent gap would make the patient check pass while skipping rows | fill missing with the series UID | `test_unknown_series_is_an_error_not_a_gap` |
+| **Keep the existing split** (`--keep-split`) after adding patient IDs | 0 patients straddle, so the split is already patient-disjoint; re-drawing would change the test set for nothing | re-split by patient | 545 vs 546 groups: a new `GroupShuffleSplit` draw would give a different test set |
+| **Verification fails** if a patient is in two splits or a row has no patient_id | turns "we checked once" into a check that runs every time | a log message only | `test_same_patient_in_train_and_test_fails`: two different scans of one patient in train + test → FAILED, although every series is in one split only |
+
+### Break-it exercise
+- In `tests/test_patient_ids.py`, change the second row of `test_clean_patient_split_passes` from `"train"` to `"test"`. Predict first: does it pass or fail, and which check message appears?
