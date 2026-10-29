@@ -2,8 +2,14 @@
 """
 01_data_pipeline.py  --  Day 1 of 2026-hybrid-xai-lung-nodule
 
-Data acquisition -> volumetric normalisation -> 15 tabular radiomics ->
-leakage-free (patient/scan-disjoint) 70/15/15 split -> verification self-check.
+Data acquisition -> isotropic resampling + fixed-size (mm) crop -> lung window ->
+15 tabular radiomics -> leakage-free (patient/scan-disjoint) 70/15/15 split ->
+verification self-check.
+
+Phase 7 (step S): every patch is resampled to --spacing-mm (default 1.0 mm) in all
+three axes and cropped to a --crop-mm cube (default 32 mm -> 32^3 voxels), centred on
+the nodule. Before this, the crop was 32 *voxels*, which covered 14-80 mm in depth
+depending on the scanner's slice spacing. `--spacing-mm 0` restores that legacy crop.
 
 Source dataset: LIDC-IDRI 1176-nodule benchmark (LUNA22-ISMI release,
 https://zenodo.org/record/6559584): LIDC-IDRI_1176.zip (NIfTI sub-volumes)
@@ -23,9 +29,13 @@ Typical usage
     # re-run only the verification on existing outputs
     python 01_data_pipeline.py --verify-only
 
+    # Phase 7: re-preprocess with 1 mm isotropic voxels, but KEEP the existing
+    # train/val/test assignment so old and new results are compared on the same nodules
+    python 01_data_pipeline.py --no-download --keep-split data/processed/metadata.csv
+
 Outputs (relative to --data-dir, default ./data)
 -------------------------------------------------
-    processed/patches/{patch_filename}.npy   float32 (32,32,32) in [0,1]
+    processed/patches/{patch_filename}.npy   float32 (N,N,N) in [0,1], N = crop_mm / spacing_mm
     processed/{train,val,test}.csv
     processed/metadata.csv                   combined audit trail (+ `split`)
     processed/dataset_summary.json
@@ -47,6 +57,7 @@ from typing import Any, Optional
 import nibabel as nib
 import numpy as np
 import pandas as pd
+from scipy import ndimage as ndi
 from scipy import stats as sps
 from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
@@ -64,7 +75,10 @@ BENCHMARK_FILES = {  # filename -> md5 (from the Zenodo record)
     "LIDC-IDRI_1176.zip": "4b247b69de74a8df58912a7395944cc1",
 }
 
-ROI_SIZE = 32
+ROI_SIZE = 32                 # legacy crop size in voxels (used when spacing_mm == 0)
+TARGET_SPACING_MM = 1.0       # Phase 7: isotropic voxel size after resampling
+CROP_MM = 32.0                # Phase 7: physical edge length of the cube around the nodule
+INTERP_ORDER = 1              # 1 = trilinear (0 = nearest, 3 = cubic)
 PAD_HU = -1000.0
 HU_MIN, HU_MAX = -1000.0, 400.0
 SOLID_HU, HYPERDENSE_HU = -400.0, 100.0
@@ -121,6 +135,20 @@ class Config:
     allow_index_order: bool
     column_map: dict[str, str]
     column_names: Optional[list[str]]
+    spacing_mm: float = TARGET_SPACING_MM
+    crop_mm: float = CROP_MM
+    keep_split: Optional[Path] = None
+
+    @property
+    def resample(self) -> bool:
+        return self.spacing_mm > 0
+
+    @property
+    def roi_size(self) -> int:
+        """Patch edge length in voxels."""
+        if not self.resample:
+            return ROI_SIZE
+        return output_size(self.crop_mm, self.spacing_mm)
 
     @property
     def processed_dir(self) -> Path:
@@ -429,6 +457,51 @@ def center_crop_pad(vol: np.ndarray, size: int = ROI_SIZE, pad_value: float = PA
     return vol[sl]
 
 
+def output_size(crop_mm: float, spacing_mm: float) -> int:
+    """Number of output voxels per axis, e.g. 32 mm / 1.0 mm -> 32."""
+    n = crop_mm / spacing_mm
+    if abs(n - round(n)) > 1e-6 or round(n) < 1:
+        raise ValueError(f"crop_mm ({crop_mm}) must be a whole multiple of spacing_mm ({spacing_mm})")
+    return int(round(n))
+
+
+def resample_crop_iso(vol: np.ndarray, spacing_dhw: tuple[float, float, float],
+                      spacing_mm: float = TARGET_SPACING_MM, crop_mm: float = CROP_MM,
+                      pad_value: float = PAD_HU, order: int = INTERP_ORDER,
+                      ) -> tuple[np.ndarray, float]:
+    """Resample a (D,H,W) HU volume to isotropic `spacing_mm` voxels and cut a `crop_mm`
+    cube centred on the nodule, in one interpolation step.
+
+    Centre: the nodule sits at the middle of every LUNA22 sub-volume. We use the
+    geometric centre (shape-1)/2, e.g. (31.5, 63.5, 63.5) for 64x128x128, which is
+    exactly the centre of the legacy crop [16:48, 48:80, 48:80]. Output voxel k
+    (k = 0..N-1) lies at (k - (N-1)/2) * spacing_mm millimetres from that centre.
+    Consequence: for a source that is already 1 mm isotropic, the output equals the
+    legacy crop voxel for voxel (no interpolation blur).
+
+    Each output position is converted to a (fractional) source index,
+        src = centre + offset_mm / source_spacing_mm,
+    and the HU value there is interpolated (trilinear by default). Positions outside
+    the source volume get `pad_value` (air, -1000 HU).
+
+    Returns (crop float32 of shape (N,N,N), pad_fraction = share of output voxels that
+    fell outside the source volume and were filled with `pad_value`).
+    """
+    if vol.ndim != 3:
+        raise ValueError(f"expected a 3-D volume, got shape {vol.shape}")
+    n_out = output_size(crop_mm, spacing_mm)
+    centre = (np.asarray(vol.shape, dtype=np.float64) - 1.0) / 2.0
+    offsets_mm = (np.arange(n_out, dtype=np.float64) - (n_out - 1) / 2.0) * spacing_mm
+    axes = [centre[i] + offsets_mm / float(spacing_dhw[i]) for i in range(3)]  # source indices
+    grid = np.stack(np.meshgrid(*axes, indexing="ij"))                         # (3, N, N, N)
+    crop = ndi.map_coordinates(vol.astype(np.float32, copy=False), grid, order=order,
+                               mode="constant", cval=pad_value, prefilter=order > 1)
+    inside = np.ones((n_out,) * 3, dtype=bool)
+    for i in range(3):
+        inside &= (grid[i] >= 0) & (grid[i] <= vol.shape[i] - 1)
+    return crop.astype(np.float32), float(1.0 - inside.mean())
+
+
 def lung_window(hu: np.ndarray) -> np.ndarray:
     """Clip to [-1000, 400] HU and min-max scale to float32 [0, 1]."""
     clipped = np.clip(hu, HU_MIN, HU_MAX)
@@ -509,9 +582,12 @@ def build_dataset(cfg: Config) -> tuple[pd.DataFrame, dict[str, int]]:
             vol, spacing = load_volume_dhw(Path(rec["volume_path"]), cfg.canonical)
             if vol.min() > -500:
                 suspicious_hu += 1
-            hu_crop = center_crop_pad(vol)
-            if vol.shape == (64, 128, 128):  # documented LUNA22 geometry: crop == [16:48, 48:80, 48:80]
-                assert np.array_equal(hu_crop, vol[16:48, 48:80, 48:80]), "unexpected crop window"
+            if cfg.resample:  # Phase 7: same physical size (mm) for every nodule
+                hu_crop, pad_fraction = resample_crop_iso(vol, spacing, cfg.spacing_mm, cfg.crop_mm)
+            else:             # legacy: 32 voxels, whatever their size in mm
+                hu_crop, pad_fraction = center_crop_pad(vol), 0.0
+                if vol.shape == (64, 128, 128):  # documented LUNA22 geometry: crop == [16:48, 48:80, 48:80]
+                    assert np.array_equal(hu_crop, vol[16:48, 48:80, 48:80]), "unexpected crop window"
             patch = lung_window(hu_crop)
             patch_file = cfg.patch_dir / f"{rec['patch_name']}.npy"
             np.save(patch_file, patch)
@@ -531,6 +607,7 @@ def build_dataset(cfg: Config) -> tuple[pd.DataFrame, dict[str, int]]:
             "source_volume": Path(rec["volume_path"]).name,
             "orig_shape_dhw": "x".join(map(str, vol.shape)),
             "spacing_dhw_mm": "x".join(f"{s:.3f}" for s in spacing),
+            "pad_fraction": round(pad_fraction, 6),
             "malignancy_mean": rec["malignancy"],
             "label": int(rec["label"]),
             **feats,
@@ -586,6 +663,28 @@ def grouped_split(df: pd.DataFrame, seed: int, tries: int = 1,
     return best
 
 
+def load_split_assignment(path: Path) -> pd.Series:
+    """nodule_id -> split from an existing metadata.csv (or train/val/test CSV with a split column)."""
+    old = pd.read_csv(path, usecols=["nodule_id", "split"], dtype={"nodule_id": str})
+    if old["nodule_id"].duplicated().any():
+        raise ValueError(f"{path}: duplicate nodule_id values")
+    log.info("Reusing split from %s (%d nodules)", path, len(old))
+    return old.set_index("nodule_id")["split"]
+
+
+def apply_split_assignment(df: pd.DataFrame, old: pd.Series) -> pd.Series:
+    """Map every nodule to its old split; refuse if any nodule is new (no silent re-splitting)."""
+    split = df["nodule_id"].astype(str).map(old)
+    if split.isna().any():
+        missing = df.loc[split.isna(), "nodule_id"].head(5).tolist()
+        raise KeyError(f"{int(split.isna().sum())} nodule(s) not in the kept split, e.g. {missing}")
+    dropped_now = sorted(set(old.index) - set(df["nodule_id"].astype(str)))
+    if dropped_now:
+        log.warning("%d nodule(s) in the kept split were not produced this run, e.g. %s",
+                    len(dropped_now), dropped_now[:5])
+    return split.astype(object)
+
+
 def class_table(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for name in ("train", "val", "test"):
@@ -612,7 +711,15 @@ def save_outputs(df: pd.DataFrame, dropped: dict[str, int], cfg: Config) -> None
     df.to_csv(out / "metadata.csv", index=False)
 
     summary = {
-        "config": {"seed": cfg.seed, "split_tries": cfg.split_tries, "roi_size": ROI_SIZE,
+        "config": {"seed": cfg.seed, "split_tries": cfg.split_tries, "roi_size": cfg.roi_size,
+                   "resampled": cfg.resample,
+                   "target_spacing_mm": cfg.spacing_mm if cfg.resample else None,
+                   "crop_mm": cfg.crop_mm if cfg.resample else None,
+                   "interpolation": {0: "nearest", 1: "trilinear", 3: "cubic"}.get(INTERP_ORDER, INTERP_ORDER)
+                   if cfg.resample else None,
+                   "split_source": str(cfg.keep_split) if cfg.keep_split else "grouped_split",
+                   "n_padded_patches": int((df["pad_fraction"] > 0).sum()),
+                   "max_pad_fraction": float(df["pad_fraction"].max()),
                    "hu_window": [HU_MIN, HU_MAX], "pad_hu": PAD_HU, "canonical_orientation": cfg.canonical,
                    "grouping_column": "patient_id" if df["patient_id"].notna().any() else "series_uid",
                    "feature_columns": FEATURE_COLUMNS},
@@ -652,6 +759,11 @@ def run_verification(cfg: Config) -> bool:
     all_df = pd.concat(parts.values(), ignore_index=True)
 
     # patches: exist, exact shape, float32, finite, in [0,1]
+    # expected edge length comes from the run that wrote the patches (summary), not the CLI
+    summary_path = out / "dataset_summary.json"
+    roi = cfg.roi_size
+    if summary_path.exists():
+        roi = int(json.loads(summary_path.read_text())["config"].get("roi_size", roi))
     bad_missing = bad_shape = bad_range = 0
     root = cfg.data_dir.parent
     for p in tqdm(all_df["patch_path"], desc="Verifying patches", unit="patch"):
@@ -660,12 +772,17 @@ def run_verification(cfg: Config) -> bool:
             bad_missing += 1
             continue
         a = np.load(path, mmap_mode="r")
-        if a.shape != (ROI_SIZE,) * 3 or a.dtype != np.float32:
+        if a.shape != (roi,) * 3 or a.dtype != np.float32:
             bad_shape += 1
         elif not np.isfinite(a).all() or a.min() < 0.0 or a.max() > 1.0:
             bad_range += 1
     check(bad_missing == 0, f"{bad_missing} patch file(s) missing on disk")
-    check(bad_shape == 0, f"{bad_shape} patch(es) not float32 with shape (32,32,32)")
+    check(bad_shape == 0, f"{bad_shape} patch(es) not float32 with shape ({roi},{roi},{roi})")
+    if "pad_fraction" in all_df:
+        n_pad = int((all_df["pad_fraction"] > 0).sum())
+        log.info("Patches with padding outside the source volume: %d (max %.1f%% of voxels)",
+                 n_pad, 100 * all_df["pad_fraction"].max())
+        check(all_df["pad_fraction"].max() < 0.5, "a patch is more than half padding")
     check(bad_range == 0, f"{bad_range} patch(es) contain NaN/inf or values outside [0,1]")
 
     # radiomics finite
@@ -727,6 +844,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         f"Canonical keys: {list(COLUMN_ALIASES)}")
     p.add_argument("--column-names", type=lambda s: s.split(","), default=None,
                    help="Names for a bare 2-D metadata array")
+    p.add_argument("--spacing-mm", type=float, default=TARGET_SPACING_MM,
+                   help=f"Isotropic voxel size after resampling (default {TARGET_SPACING_MM}); "
+                        "0 = legacy 32-voxel crop without resampling")
+    p.add_argument("--crop-mm", type=float, default=CROP_MM,
+                   help=f"Edge length of the cube around the nodule in mm (default {CROP_MM}); "
+                        "patch size = crop-mm / spacing-mm voxels")
+    p.add_argument("--keep-split", type=Path, default=None,
+                   help="Reuse the train/val/test assignment from an existing metadata.csv "
+                        "(matched by nodule_id) instead of drawing a new split")
     p.add_argument("--inspect", action="store_true", help="Print metadata schema and exit")
     p.add_argument("--verify-only", action="store_true", help="Only run the self-check on existing outputs")
     return p.parse_args(argv)
@@ -741,7 +867,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         split_tries=args.split_tries, canonical=args.canonical,
         allow_index_order=args.allow_index_order, column_map=args.column_map,
         column_names=args.column_names,
+        spacing_mm=args.spacing_mm, crop_mm=args.crop_mm, keep_split=args.keep_split,
     )
+    log.info("Patch geometry: %s", f"{cfg.roi_size}^3 voxels of {cfg.spacing_mm} mm = {cfg.crop_mm} mm cube"
+             if cfg.resample else f"legacy {ROI_SIZE}^3 voxel crop (no resampling)")
 
     if args.verify_only:
         return 0 if run_verification(cfg) else 1
@@ -755,8 +884,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(raw.head(5).to_string())
         return 0
 
+    # read the old assignment BEFORE build_dataset, because save_outputs overwrites metadata.csv
+    old_split = load_split_assignment(cfg.keep_split) if cfg.keep_split else None
     df, dropped = build_dataset(cfg)
-    df["split"] = grouped_split(df, cfg.seed, cfg.split_tries)
+    if old_split is not None:
+        df["split"] = apply_split_assignment(df, old_split)
+    else:
+        df["split"] = grouped_split(df, cfg.seed, cfg.split_tries)
     save_outputs(df, dropped, cfg)
     log.info("Dropped: %s", dropped)
     return 0 if run_verification(cfg) else 1
