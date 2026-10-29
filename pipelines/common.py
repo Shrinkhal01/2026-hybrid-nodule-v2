@@ -93,9 +93,11 @@ def load_split(name: str, processed_dir: Path = PROCESSED_DIR, limit: Optional[i
     if not set(df["label"].unique()) <= {0, 1}:
         raise ValueError(f"{path.name}: labels must be in {{0, 1}}")
     if limit is not None and limit < len(df):
-        df = (df.groupby("label", group_keys=False)
-                .apply(lambda g: g.sample(max(1, round(limit * len(g) / len(df))), random_state=seed))
-                .reset_index(drop=True))
+        # one sample per class, then concat. Not groupby().apply(): pandas >= 3.0 drops the
+        # grouping column ("label") from what apply() returns -> KeyError: 'label' downstream
+        parts = [g.sample(max(1, round(limit * len(g) / len(df))), random_state=seed)
+                 for _, g in df.groupby("label")]
+        df = pd.concat(parts).reset_index(drop=True)
     return df.reset_index(drop=True)
 
 
