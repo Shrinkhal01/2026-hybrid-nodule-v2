@@ -75,3 +75,13 @@ test set, and a CPU end-to-end run of `scripts/train_on_gpu.sh` on 26 sample nod
 
 ### Break-it exercise
 - Run `python scripts/aggregate_runs.py results/phase7_A` after deleting one `image/seed_*` folder's `test_predictions.csv`. Predict first: does it crash, skip, or silently use 4 seeds? Which line in `load_run()` decides?
+
+### Step A results (Run 2 = `results/phase7_A`, 2 feature sets x seeds 42-46, test n = 151)
+| | all 15: mean ± SD (ensemble) | image 12: mean ± SD (ensemble) | all − image, ensemble [95% CI] |
+|---|---|---|---|
+| A: Random Forest | 0.942 ± 0.004 (0.943) | **0.666** ± 0.010 (0.668) | **+0.276** [+0.197, +0.364], p < 0.001 |
+| B: 3D ResNet (control) | 0.894 ± 0.010 (0.901) | 0.896 ± 0.005 (0.908) | −0.007 [−0.021, +0.005] = noise floor |
+| C: Hybrid | 0.915 ± 0.009 (0.924) | 0.904 ± 0.016 (0.917) | +0.008 [−0.006, +0.022], p = 0.28 |
+- Same config re-run 3× with seed 42 (Run 1, `phase7_rerun_seed42`, `_b`): Hybrid 0.912 / 0.930 / 0.919, threshold 0.706 / 0.827 / 0.520 → GPU runs are not bit-reproducible.
+- Reading (facts): the RF's score comes almost entirely from the 3 ratings; the Hybrid's does not (its drop is within the control's noise); the Hybrid with ratings (0.915) stays far below a logistic regression on the ratings alone (0.969).
+- Hypothesis, NOT MEASURED: the CNN branch memorises the training set (train loss 0.11), so the network has little pressure to use the tabular branch ("modality imbalance").
