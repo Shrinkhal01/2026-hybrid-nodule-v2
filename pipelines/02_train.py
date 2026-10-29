@@ -25,6 +25,8 @@ Checkpoints are dicts: ``{"state_dict", "epoch", "val_auc", "feature_cols", "sca
 Usage
     python pipelines/02_train.py                      # full run (CUDA if available)
     python pipelines/02_train.py --epochs 2 --limit 64 --results-dir /tmp/smoke   # quick smoke test
+    python pipelines/02_train.py --features image --seed 43 --results-dir results/x  # Phase 7 ablation:
+        RF + Hybrid get only the 12 image-derived features (no radiologist ratings)
     (CUDA is required by default; add --allow-cpu only for debugging without a GPU)
 """
 from __future__ import annotations
@@ -48,7 +50,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from models.baseline_rf import BaselineRF  # noqa: E402
 from models.hybrid_net import HybridNoduleNet, Pure3DResNet, count_parameters  # noqa: E402
 from pipelines.common import (  # noqa: E402
-    FEATURE_COLS, PROCESSED_DIR, RESULTS_DIR, NoduleDataset, TabularScaler, assert_group_disjoint,
+    FEATURE_COLS, FEATURE_SETS, PROCESSED_DIR, RESULTS_DIR, NoduleDataset, TabularScaler, assert_group_disjoint,
     bootstrap_auc_ci, check_feature_contract, classification_metrics, get_device, load_split,
     make_loader, predict_probs, safe_auc, set_seed, youden_threshold,
 )
@@ -76,6 +78,7 @@ def train_deep_model(
     ckpt_path: Path,
     scaler: TabularScaler,
     results_dir: Path,
+    feature_cols: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Train ``model``; save the best-validation-AUC checkpoint to ``ckpt_path``.
 
@@ -120,7 +123,7 @@ def train_deep_model(
             best_auc, best_epoch = val_auc, epoch
             torch.save({
                 "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
-                "epoch": epoch, "val_auc": val_auc, "feature_cols": FEATURE_COLS,
+                "epoch": epoch, "val_auc": val_auc, "feature_cols": feature_cols or FEATURE_COLS,
                 "scaler": scaler.to_dict(), "model": name,
             }, ckpt_path)
         log.info("[%s] epoch %02d/%d loss=%.4f val_auc=%.4f lr=%.2e %s (%.1fs)", name, epoch,
@@ -165,6 +168,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--features", choices=list(FEATURE_SETS), default="all",
+                   help="tabular inputs for RF + Hybrid: 'all' = 15 (incl. 3 radiologist ratings), "
+                        "'image' = 12 measured from the CT patch only (Phase 7 ablation)")
     p.add_argument("--num-workers", type=int, default=4, help="DataLoader workers (pin_memory is on for CUDA)")
     p.add_argument("--pretrained", action="store_true", help="init the 3D ResNet from Kinetics-400 (downloads)")
     p.add_argument("--no-amp", action="store_true", help="disable bf16 autocast on CUDA")
@@ -196,7 +202,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     n_pos, n_neg = int(y_train.sum()), int((y_train == 0).sum())
     pos_weight = n_neg / max(n_pos, 1)
 
-    scaler = TabularScaler().fit(train_df[FEATURE_COLS].to_numpy())
+    cols = FEATURE_SETS[args.features]  # Phase 7 ablation: which tabular inputs RF + Hybrid see
+    log.info("Feature set '%s': %d tabular features", args.features, len(cols))
+    scaler = TabularScaler().fit(train_df[cols].to_numpy())
     (args.results_dir / "tabular_scaler.json").write_text(json.dumps(scaler.to_dict(), indent=2))
 
     rows: List[Dict[str, Any]] = []
@@ -205,9 +213,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ---- Model A: Random Forest ------------------------------------------
     if "rf" in args.models:
-        rf = BaselineRF(FEATURE_COLS, args.seed).fit(train_df[FEATURE_COLS].to_numpy(), y_train)
-        p_val = rf.predict_proba(val_df[FEATURE_COLS].to_numpy())
-        p_test = rf.predict_proba(test_df[FEATURE_COLS].to_numpy())
+        rf = BaselineRF(cols, args.seed).fit(train_df[cols].to_numpy(), y_train)
+        p_val = rf.predict_proba(val_df[cols].to_numpy())
+        p_test = rf.predict_proba(test_df[cols].to_numpy())
         rf.save(args.results_dir / "baseline_rf.joblib")
         rows.append(evaluate_model("rf", y_val, p_val, y_test, p_test, args.n_boot, args.seed))
         test_preds["prob_rf"] = p_test
@@ -219,9 +227,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if deep:
         pin = device.type == "cuda"
         ds = {
-            "train": NoduleDataset(train_df, scaler, augment=True),
-            "val": NoduleDataset(val_df, scaler),
-            "test": NoduleDataset(test_df, scaler),
+            "train": NoduleDataset(train_df, scaler, augment=True, feature_cols=cols),
+            "val": NoduleDataset(val_df, scaler, feature_cols=cols),
+            "test": NoduleDataset(test_df, scaler, feature_cols=cols),
         }
         loaders = {
             "train": make_loader(ds["train"], args.batch_size, True, args.num_workers, pin),
@@ -230,14 +238,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         specs = {
             "resnet": ("pure_resnet", lambda: Pure3DResNet(args.pretrained), "best_pure_resnet.pth"),
-            "hybrid": ("hybrid_net", lambda: HybridNoduleNet(pretrained=args.pretrained), "best_hybrid_net.pth"),
+            "hybrid": ("hybrid_net", lambda: HybridNoduleNet(n_tabular=len(cols), pretrained=args.pretrained), "best_hybrid_net.pth"),
         }
         for key in deep:
             tag, factory, ckpt_name = specs[key]
             set_seed(args.seed)  # identical RNG state at the start of each deep model
             ckpt_path = args.results_dir / ckpt_name
             info = train_deep_model(tag, factory(), loaders, y_val, pos_weight, device, args,
-                                    ckpt_path, scaler, args.results_dir)
+                                    ckpt_path, scaler, args.results_dir, cols)
             model = load_best(factory(), ckpt_path, device)
             use_amp = device.type == "cuda" and not args.no_amp
             p_val = predict_probs(model, loaders["val"], device, use_amp)
@@ -255,6 +263,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_info.update({
         "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "device": str(device), "torch": torch.__version__, "pos_weight": pos_weight,
+        "feature_set": args.features, "feature_cols": cols,
         "thresholds": {r["model"]: r["threshold"] for r in rows},
         "split_sizes": {"train": len(train_df), "val": len(val_df), "test": len(test_df)},
     })

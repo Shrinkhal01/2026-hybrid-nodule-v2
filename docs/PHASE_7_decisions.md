@@ -52,3 +52,26 @@ Spec (write your own in `tests/my_resample.py`, without looking at the pipeline 
 
 ### Break-it exercise
 - In `tests/test_patient_ids.py`, change the second row of `test_clean_patient_split_passes` from `"train"` to `"test"`. Predict first: does it pass or fail, and which check message appears?
+
+## Step A: ablation (no radiologist ratings) + several seeds
+
+Numbers: Run 1 (`results/phase7_SP`), `scripts/aggregate_runs.py` reference rows on the real
+test set, and a CPU end-to-end run of `scripts/train_on_gpu.sh` on 26 sample nodules (mechanics only).
+
+| Used | Why | Rejected alternative | Number that justified it |
+|---|---|---|---|
+| **`--features image`** = the 12 CT-measured features; drops diameter, calcification, texture | the 3 ratings come from the **same radiologists who gave the label** → we must see what the model does without them | drop only diameter; add noise to ratings | Run 1: **diameter alone** test AUC **0.941**; logistic regression on the **3 ratings** **0.969** [0.941, 0.991] > Hybrid 0.912 |
+| Same split, same patches, same code; only the tabular columns change | one change at a time → the difference is caused by the ratings | new split per feature set | Hybrid weights 33,259,777 → 33,259,585 (**−192 = 3 × 64**, the first table layer only) |
+| **5 seeds** (42–46) per feature set | one seed can't separate a real change from luck | 1 seed (Run 1); 10+ seeds | Run 1 val AUC jumps **±0.02 between epochs**; Run 1 vs Part 2 Hybrid change −0.025 was **not significant** (p = 0.16); one training run = **39 s** |
+| **Seed ensemble** (average probability over the 5 seeds) + paired bootstrap on it | uses all 5 runs on the same 151 nodules → tighter, fair comparison | compare only mean ± SD | NOT MEASURED until Run 2 |
+| **ResNet as a control row** in the ablation table | it uses no tabular features → its all − image difference must be ~0; anything else = GPU run-to-run noise | no control | CPU end-to-end test: **+0.000** (identical); on the GPU: NOT MEASURED (cuDNN may not be bit-exact) |
+| **Reference models** with no training randomness (diameter alone, logistic regression on 3 ratings, logistic regression on 12 image features) | a floor and a ceiling for the deep models | none | logistic regression on **12 image features**: **0.641** [0.550, 0.729] → the hand-made radiomics carry little linear signal |
+| Resume: a finished `seed_*` folder is skipped | a crash or SSH drop doesn't cost the finished runs | start over | n/a |
+
+### Limits still open after step A
+- The **image** set still has whole-crop radiomics (no nodule mask) → weak features (0.641) may undersell "image-only".
+- The app (`app/streamlit_app.py`) only loads **15-feature** checkpoints → point `NODULE_RESULTS_DIR` at an `all/seed_*` folder.
+- Calibration (Hybrid overconfident, Brier 0.151 vs RF 0.096 in Run 1) is not addressed yet.
+
+### Break-it exercise
+- Run `python scripts/aggregate_runs.py results/phase7_A` after deleting one `image/seed_*` folder's `test_predictions.csv`. Predict first: does it crash, skip, or silently use 4 seeds? Which line in `load_run()` decides?

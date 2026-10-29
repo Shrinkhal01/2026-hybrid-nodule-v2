@@ -32,6 +32,11 @@ FEATURE_COLS: list[str] = [
     "solid_fraction_pct", "hyperdense_fraction_pct",
     "diameter_mm", "calcification", "texture",
 ]
+# Phase 7 step A (ablation): the last 3 columns are radiologist ratings, made by the same
+# readers who gave the malignancy label. "image" = only what is measured from the CT patch.
+RATING_FEATURE_COLS: list[str] = ["diameter_mm", "calcification", "texture"]
+IMAGE_FEATURE_COLS: list[str] = [c for c in FEATURE_COLS if c not in RATING_FEATURE_COLS]  # 12
+FEATURE_SETS: dict[str, list[str]] = {"all": FEATURE_COLS, "image": IMAGE_FEATURE_COLS}
 PATCH_SHAPE = (32, 32, 32)
 
 
@@ -170,9 +175,10 @@ class NoduleDataset(Dataset):
     """
 
     def __init__(self, df: pd.DataFrame, scaler: TabularScaler, augment: bool = False,
-                 root: Path = PROJECT_ROOT) -> None:
+                 root: Path = PROJECT_ROOT, feature_cols: Optional[Sequence[str]] = None) -> None:
         self.df = df.reset_index(drop=True)
         self.augment = augment
+        self.feature_cols = list(feature_cols) if feature_cols is not None else FEATURE_COLS
         vols = []
         for p in self.df["patch_path"]:
             path = resolve_patch_path(p, root)
@@ -184,7 +190,7 @@ class NoduleDataset(Dataset):
                 raise ValueError(f"{path.name}: expected {PATCH_SHAPE}, got {a.shape}")
             vols.append(a.astype(np.float32, copy=False))
         self.volumes = torch.from_numpy(np.stack(vols)).unsqueeze(1)  # (N,1,D,H,W)
-        self.tabular = torch.from_numpy(scaler.transform(self.df[FEATURE_COLS].to_numpy()))
+        self.tabular = torch.from_numpy(scaler.transform(self.df[self.feature_cols].to_numpy()))
         self.labels = torch.from_numpy(self.df["label"].to_numpy(dtype=np.float32))
 
     def __len__(self) -> int:
