@@ -1,8 +1,15 @@
 {
   "config": {
     "seed": 42,
-    "split_tries": 100,
+    "split_tries": 1,
     "roi_size": 32,
+    "resampled": true,
+    "target_spacing_mm": 1.0,
+    "crop_mm": 32.0,
+    "interpolation": "trilinear",
+    "split_source": "data/processed/metadata.csv",
+    "n_padded_patches": 4,
+    "max_pad_fraction": 0.125,
     "hu_window": [
       -1000.0,
       400.0
