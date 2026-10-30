@@ -16,8 +16,11 @@ the 3D CNN branch: alpha_k = mean_{d,h,w} dY/dA_k ; CAM = ReLU(sum_k alpha_k A_k
 upsampled to 32^3 and scaled to [0, 1]. Y is the logit of the model's *predicted* class (sign-flipped
 for predicted-benign cases), so the map always shows evidence *for the prediction being explained*.
 
-Caveat: at 32^3 input, layer4 has a native resolution of only 4x2x2 voxels, so the maps are coarse
-by construction (``--target-layer layer3`` gives 8x4x4).
+Phase 7 step E: the default is now OCCLUSION (``--target-layer occlusion``): hide an 8 mm cube at a
+time and map how much the explained logit drops. Step R scored all methods on all 151 test nodules
+(results/phase7_R/EXPLAIN_SUMMARY.md): layer4 Grad-CAM (4x2x2) hit the nodule in 15% of cases, like
+an untrained network; occlusion in ~50%. Grad-CAM stays available (``--target-layer layer3`` etc.).
+Each case in the audit also gets the ball-mask scores of models/xai_metrics.py.
 
 Outputs: ``results/gradcam_hybrid_overlay.png`` and ``results/xai_cases_audit.json``.
 """
@@ -43,7 +46,9 @@ import torch.nn.functional as F  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from models.gradcam import OCCLUSION, occlusion_map  # noqa: E402
 from models.hybrid_net import HybridNoduleNet  # noqa: E402
+from models.xai_metrics import localisation  # noqa: E402
 from pipelines.common import (  # noqa: E402
     FEATURE_COLS, FEATURE_SETS, PROCESSED_DIR, RESULTS_DIR, NoduleDataset, TabularScaler, get_device, load_split,
     make_loader, predict_probs, youden_threshold,
@@ -150,7 +155,8 @@ def select_cases(df: pd.DataFrame, thr: float) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # Plotting
 # --------------------------------------------------------------------------- #
-def render_figure(records: List[Dict[str, Any]], out_path: Path, alpha: float, dpi: int = 150) -> None:
+def render_figure(records: List[Dict[str, Any]], out_path: Path, alpha: float, dpi: int = 150,
+                  method: str = "occlusion (8 mm cubes)") -> None:
     """3-column panel per case: CT slice | Grad-CAM | overlay."""
     n = len(records)
     fig, axes = plt.subplots(n, 3, figsize=(10.5, 3.4 * n), squeeze=False)
@@ -174,9 +180,9 @@ def render_figure(records: List[Dict[str, Any]], out_path: Path, alpha: float, d
             axes[r, c].set_xticks([])
             axes[r, c].set_yticks([])
         if r == 0:
-            for c, t in enumerate(("Original CT slice (z=16)", "3D Grad-CAM", "Overlay")):
+            for c, t in enumerate(("Original CT slice (z=16)", method, "Overlay")):
                 axes[r, c].set_title(t, fontsize=10)
-    fig.suptitle("Hybrid Net - 3D Grad-CAM (layer4, evidence for predicted class), test set", fontsize=11)
+    fig.suptitle(f"Hybrid Net - {method}, evidence for the predicted class, test set", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=dpi)
@@ -218,7 +224,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
     p.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     p.add_argument("--checkpoint", type=Path, default=None, help="default: <results-dir>/best_hybrid_net.pth")
-    p.add_argument("--target-layer", choices=("layer4", "layer3"), default="layer4")
+    p.add_argument("--target-layer", choices=(OCCLUSION, "layer4", "layer3", "layer2"), default=OCCLUSION,
+                   help="occlusion (default, best in Phase 7 step R) or a Grad-CAM stage")
     p.add_argument("--alpha", type=float, default=0.4, help="overlay opacity of the heatmap")
     p.add_argument("--limit", type=int, default=None, help="DEBUG: subsample splits")
     p.add_argument("--seed", type=int, default=42)
@@ -254,8 +261,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     scored = test_df.assign(prob=p_test)
     log.info("Test: n=%d, threshold=%.4f (%s)", len(scored), thr, thr_src)
 
-    layer = getattr(model.backbone, args.target_layer)[-1]  # last residual block of the chosen stage
-    engine = GradCAM3D(model, layer)
+    use_occ = args.target_layer == OCCLUSION
+    engine = None if use_occ else GradCAM3D(model, getattr(model.backbone, args.target_layer)[-1])
     records: List[Dict[str, Any]] = []
     audit_cases: List[Dict[str, Any]] = []
     try:
@@ -270,7 +277,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             vol = item["volume"].unsqueeze(0).to(device)
             tab = item["tabular"].unsqueeze(0).to(device)
             pred = int(row["prob"] >= thr)
-            cam, logit, native = engine(vol, tab, sign=1.0 if pred == 1 else -1.0)
+            sign = 1.0 if pred == 1 else -1.0
+            if use_occ:
+                cam = occlusion_map(model, vol, tab, sign=sign)
+                with torch.no_grad():
+                    logit, native = float(model(vol, tab).squeeze()), (7, 7, 7)
+            else:
+                cam, logit, native = engine(vol, tab, sign=sign)
             with torch.no_grad():
                 _, gate = model(vol, tab, return_gate=True)
             ct = vol[0, 0].cpu().numpy()
@@ -292,21 +305,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "visual_gate_mean": float(gate.mean()),
                 "slice_index_d": SLICE_IDX, "cam_native_shape_dhw": list(native),
                 **cam_statistics(cam),
+                **{f"ball_{k}": v for k, v in localisation(cam, float(row["diameter_mm"])).items()},
             })
     finally:
-        engine.close()
+        if engine is not None:
+            engine.close()
 
     if not records:
         raise RuntimeError("No cases could be selected; nothing to plot.")
     fig_path = args.results_dir / "gradcam_hybrid_overlay.png"
-    render_figure(records, fig_path, args.alpha)
+    render_figure(records, fig_path, args.alpha,
+                  method="occlusion (8 mm cubes)" if use_occ else f"3D Grad-CAM ({args.target_layer})")
     audit = {
         "checkpoint": str(ckpt_path), "checkpoint_epoch": ckpt.get("epoch"),
-        "checkpoint_val_auc": ckpt.get("val_auc"), "target_layer": f"backbone.{args.target_layer}[-1]",
+        "checkpoint_val_auc": ckpt.get("val_auc"),
+        "target_layer": "occlusion (8 mm cube, stride 4 mm)" if use_occ else f"backbone.{args.target_layer}[-1]",
         "threshold": thr, "threshold_source": thr_src, "n_test": int(len(scored)),
         "notes": [
             "CAMs explain the model's predicted class (logit sign-flipped for predicted-benign cases).",
-            "Layer4 native resolution is 4x2x2 at 32^3 input; maps are coarse and trilinearly upsampled.",
+            "Occlusion maps: 7x7x7 grid of 8 mm cubes; Grad-CAM layer4 is only 4x2x2 (Phase 7 step R: hit rate 15%).",
+            "ball_* = scores against a ball with the nodule's diameter (models/xai_metrics.py); concentration 1 = flat map.",
             "visual_gate_mean ~1 means the fusion gate favours the CT embedding over the tabular one.",
             "Grad-CAM shows where the CNN branch's evidence lies; it does not explain the tabular branch.",
         ],

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -51,11 +52,31 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def _mps_works() -> bool:
+    """True if Apple's MPS GPU exists AND runs the ops a 3D ResNet needs (3D conv + 3D pooling).
+    Older PyTorch/macOS versions lack some 3D kernels, so we test instead of trusting is_available()."""
+    if os.environ.get("NODULE_NO_MPS") == "1":
+        return False
+    mps = getattr(torch.backends, "mps", None)
+    if mps is None or not mps.is_available():
+        return False
+    try:
+        x = torch.randn(2, 1, 8, 8, 8, device="mps")
+        y = torch.nn.functional.conv3d(x, torch.randn(4, 1, 3, 3, 3, device="mps"), padding=1)
+        torch.nn.functional.adaptive_avg_pool3d(torch.relu(y), 1).sum().item()
+        return True
+    except Exception as exc:  # pragma: no cover - depends on the Mac
+        log.warning("Apple MPS found but failed a 3D-conv test (%s) -- using CPU.", exc)
+        return False
+
+
 def get_device(require_cuda: bool = False) -> torch.device:
-    """CUDA if available (any GPU: H100, H200, A100, ...), else CPU.
+    """CUDA if available (any GPU: H100, H200, A100, ...), else Apple MPS (M-series Mac, if its 3D ops
+    work), else CPU. ``require_cuda=True`` refuses to run without CUDA (the default for full training).
 
     Logs the GPU name and compute capability; warns only if the GPU predates Ampere (capability
     < 8.0), where the bf16 autocast used in training is not natively accelerated.
+    Set NODULE_NO_MPS=1 to skip MPS and force the CPU on a Mac.
     """
     if torch.cuda.is_available():
         name = torch.cuda.get_device_name(0)
@@ -66,9 +87,13 @@ def get_device(require_cuda: bool = False) -> torch.device:
         torch.backends.cudnn.benchmark = True  # fixed input size -> faster convs (not bit-reproducible)
         return torch.device("cuda")
     if require_cuda:
-        raise RuntimeError("No CUDA device available (torch.cuda.is_available() is False). "
-                           "Run on the GPU server, or pass --allow-cpu for debugging.")
-    log.warning("CUDA not available -- falling back to CPU (training will be very slow).")
+        raise RuntimeError("No CUDA device available (torch.cuda.is_available() is False). On the GPU server, "
+                           "activate the venv / check CUDA_VISIBLE_DEVICES; on a Mac, pass --allow-cpu "
+                           "(uses Apple MPS if it works, else the CPU).")
+    if _mps_works():
+        log.info("Using Apple MPS GPU (M-series Mac). Tip: use --limit for a small subset on 8 GB.")
+        return torch.device("mps")
+    log.warning("No GPU found -- using the CPU (slow; use --limit for a small subset).")
     return torch.device("cpu")
 
 

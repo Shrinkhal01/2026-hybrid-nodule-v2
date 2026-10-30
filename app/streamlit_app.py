@@ -7,9 +7,10 @@ On a remote GPU server:
     streamlit run app/streamlit_app.py --server.port 8501 --server.headless true
     # then, on your laptop:  ssh -L 8501:localhost:8501 <user>@<server>   ->  http://localhost:8501
 
-Needs the Day 2 artefacts: results/{best_hybrid_net.pth, best_pure_resnet.pth, baseline_rf.joblib,
-model_comparison_metrics.csv} and data/processed/{train,test}.csv + patches/. Override locations with the
-environment variables NODULE_RESULTS_DIR / NODULE_DATA_DIR (the *processed* folder).
+Needs one trained run with ALL 15 features: {best_hybrid_net.pth, best_pure_resnet.pth, baseline_rf.joblib,
+model_comparison_metrics.csv} and data/processed/{train,test}.csv + patches/. Point NODULE_RESULTS_DIR at it,
+e.g. NODULE_RESULTS_DIR=results/phase7_R/all/seed_42 (NODULE_DATA_DIR = the *processed* folder).
+Runs on CUDA, Apple MPS (M-series Mac) or CPU. Explanations default to occlusion maps (Phase 7 step R/E).
 
 RESEARCH PROTOTYPE -- not a medical device; not validated for clinical use.
 """
@@ -34,9 +35,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.baseline_rf import BaselineRF  # noqa: E402
-from models.gradcam import cam_summary, explain  # noqa: E402
+from models.gradcam import OCCLUSION, explain  # noqa: E402
 from models.hybrid_net import HybridNoduleNet, Pure3DResNet  # noqa: E402
-from pipelines.common import FEATURE_COLS, TabularScaler, resolve_patch_path  # noqa: E402
+from models.xai_metrics import localisation  # noqa: E402
+from pipelines.common import FEATURE_COLS, TabularScaler, get_device, resolve_patch_path  # noqa: E402
 
 RESULTS_DIR = Path(os.environ.get("NODULE_RESULTS_DIR", PROJECT_ROOT / "results"))
 PROCESSED_DIR = Path(os.environ.get("NODULE_DATA_DIR", PROJECT_ROOT / "data" / "processed"))
@@ -48,7 +50,12 @@ FEATURE_GROUPS = {
     "Tissue density (%)": ["solid_fraction_pct", "hyperdense_fraction_pct"],
     "Radiologist consensus": ["diameter_mm", "calcification", "texture"],
 }
-LAYER_CHOICES = {"layer4 (native 4x2x2)": "layer4", "layer3 (native 8x4x4)": "layer3"}
+# Phase 7 step R scored these on all 151 test nodules (hit = hottest point on the nodule):
+# occlusion ~50%, Grad-CAM layer3 ~40%, layer4 15% (no better than an untrained network).
+LAYER_CHOICES = {"Occlusion, 8 mm cubes (best in our test)": OCCLUSION,
+                 "Grad-CAM layer3 (8x4x4)": "layer3",
+                 "Grad-CAM layer4 (4x2x2, failed our test)": "layer4"}
+DIAMETER_IDX = FEATURE_COLS.index("diameter_mm")
 PLANES = {"Axial (D)": 0, "Coronal (H)": 1, "Sagittal (W)": 2}
 DISCLAIMER = ("Research prototype built on the public LIDC-IDRI benchmark. It is **not a medical device** and "
               "must not be used for diagnosis or treatment decisions.")
@@ -61,7 +68,7 @@ DISCLAIMER = ("Research prototype built on the public LIDC-IDRI benchmark. It is
 def load_bundle(results_dir: str) -> Dict[str, Any]:
     """Load every available model once. Missing artefacts are reported, not fatal."""
     rd = Path(results_dir)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device(require_cuda=False)  # CUDA -> Apple MPS -> CPU
     bundle: Dict[str, Any] = {"device": device, "missing": [], "thresholds": {}, "scaler": None}
 
     def load_net(name: str, ckpt_name: str, factory):
@@ -71,7 +78,8 @@ def load_bundle(results_dir: str) -> Dict[str, Any]:
             return None
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
         if ckpt.get("feature_cols") not in (None, FEATURE_COLS):
-            raise ValueError(f"{ckpt_name}: feature_cols mismatch")
+            raise ValueError(f"{ckpt_name}: trained on {len(ckpt['feature_cols'])} features; the app needs a run "
+                             "with all 15 (e.g. NODULE_RESULTS_DIR=results/phase7_R/all/seed_42)")
         net = factory()
         net.load_state_dict(ckpt["state_dict"])
         net.to(device).eval()
@@ -154,7 +162,7 @@ def predict_all(bundle: Dict[str, Any], patch: np.ndarray, feats: np.ndarray) ->
     return out
 
 
-@st.cache_data(show_spinner="Computing Grad-CAM...")
+@st.cache_data(show_spinner="Computing the explanation (occlusion = 343 forward passes)...")
 def cached_cam(_bundle: Dict[str, Any], model_key: str, patch: np.ndarray, feats: np.ndarray, layer: str,
                target: str) -> Dict[str, Any]:
     """Grad-CAM for one nodule (cached on its pixels/features + settings)."""
@@ -162,7 +170,7 @@ def cached_cam(_bundle: Dict[str, Any], model_key: str, patch: np.ndarray, feats
     vol = torch.from_numpy(patch.astype(np.float32))[None, None].to(dev)
     tab = scaled_tabular(_bundle, feats).to(dev) if model_key == "hybrid" else None
     e = explain(_bundle[model_key], vol, tab, layer, _bundle["thresholds"][model_key], target)
-    e["summary"] = cam_summary(e["cam"])
+    e["score"] = localisation(e["cam"], float(feats[DIAMETER_IDX]))
     return e
 
 
@@ -241,11 +249,11 @@ def show_explanation(bundle: Dict[str, Any], patch: np.ndarray, feats: np.ndarra
     """Sidebar-driven Grad-CAM viewer for one nodule."""
     avail = [k for k in ("hybrid", "resnet") if bundle.get(k) is not None]
     if not avail:
-        st.info("No deep-model checkpoint found, so Grad-CAM is unavailable.")
+        st.info("No deep-model checkpoint found, so explanations are unavailable.")
         return
     c1, c2, c3, c4 = st.columns([1.3, 1.3, 1.2, 1])
     model_key = c1.selectbox("Explain model", avail, format_func=lambda k: MODEL_NAMES[k], key=f"{key_prefix}_m")
-    layer = LAYER_CHOICES[c2.selectbox("Target layer", list(LAYER_CHOICES), key=f"{key_prefix}_l")]
+    layer = LAYER_CHOICES[c2.selectbox("Explanation method", list(LAYER_CHOICES), key=f"{key_prefix}_l")]
     target = c3.radio("Explain evidence for", ["predicted", "malignant"], horizontal=True, key=f"{key_prefix}_t",
                       format_func=lambda s: "model's prediction" if s == "predicted" else "malignant class")
     alpha = c4.slider("Overlay opacity", 0.1, 0.9, 0.4, 0.05, key=f"{key_prefix}_a")
@@ -255,17 +263,19 @@ def show_explanation(bundle: Dict[str, Any], patch: np.ndarray, feats: np.ndarra
 
     e = cached_cam(bundle, model_key, patch, feats, layer, target)
     st.pyplot(render_slices(patch, e["cam"], PLANES[plane_name], idx, alpha), clear_figure=True)
-    s = e["summary"]
-    if s.get("cam_all_zero"):
-        st.warning("CAM = 0: no positive evidence for the explained class at this layer.")
+    s = e["score"]
+    if s.get("all_zero"):
+        st.warning("Map = 0: no positive evidence for the explained class with this method.")
     else:
         st.caption(
-            f"Explaining **{e['explained']}** evidence · native map {e['native_shape']} (trilinearly upsampled) · "
-            f"peak voxel (D,H,W) = {tuple(s['peak_voxel_dhw'])} · CAM mass in central 16³ cube = "
-            f"{s['mass_fraction_in_central_16cube']:.2f} (a uniform map scores 0.125).")
-    st.info("Interpretation caution: in the project's audit, CAM mass in the central cube was close to uniform "
-            "(0.14-0.17 at layer4), so these heatmaps are coarse and do not reliably localise the nodule. "
-            "Treat them as qualitative; Grad-CAM also says nothing about the tabular branch.")
+            f"Explaining **{e['explained']}** evidence · native grid {e['native_shape']} · "
+            f"**{s['concentration']:.1f}×** more heat on the nodule than a flat map (1.0 = flat) · "
+            f"hottest point {'**on**' if s['hit'] else '**not on**'} the nodule · "
+            f"centre of the heat {s['com_dist_mm']:.1f} mm from the nodule centre.")
+    st.info("How far to trust this: on all 151 test nodules (Phase 7 step R), occlusion put its hottest point on "
+            "the nodule in about 50% of cases and Grad-CAM layer4 in 15%, no better than an untrained network. "
+            "Maps show where the CT evidence is; the Hybrid barely uses its feature table (shuffling it costs "
+            "about 0.03 AUC), so the picture is most of its decision.")
 
 
 # --------------------------------------------------------------------------- #
@@ -399,16 +409,23 @@ benign (mean radiologist malignancy < 3) or malignant (> 3). Indeterminate nodul
 - **C - Hybrid Net**: the same 3D ResNet-18 plus a tabular MLP, combined by a learned gate
   `z = g·z_visual + (1−g)·W·z_tabular`.
 
-**Explainability.** 3D Grad-CAM on the last residual block of `layer4` (or `layer3`).
+**Explainability.** Occlusion maps (hide an 8 mm cube at a time) by default; 3D Grad-CAM at `layer3` / `layer4`
+as alternatives. All were scored on the 151 test nodules against a ball with the nodule's diameter.
+
+**What the Phase 7 checks found (5 seeds each)**
+- Patches are resampled to 1 mm voxels (32 mm cube); splits are patient-disjoint (545 patients, checked with pylidc).
+- Image only, the 3D ResNet and the Hybrid reach about **0.90 AUC**; the Hybrid is not better than the ResNet.
+- Three of the 15 features (diameter, calcification, texture) are radiologist ratings, made by the readers who gave
+  the label. Without them the Random Forest falls from 0.94 to 0.67; the Hybrid hardly changes.
+- Diameter alone scores 0.94 and a logistic regression on the 3 ratings 0.97: high, but circular.
+- One training run moves by about ±0.01 AUC by chance (GPU), so results are reported as mean ± SD over seeds.
 
 **Known limitations**
 - Detection is out of scope: patches are centred on radiologist-annotated nodules.
-- Three of the 15 features (diameter, calcification, texture) are radiologist ratings; the Random Forest relies on
-  them heavily (diameter alone ≈ 47% of its importance).
-- The hybrid's AUC advantage over the baselines is not statistically significant on 151 test nodules.
-- Splits are by CT series (no PatientID in the metadata), so patient-level leakage cannot be fully excluded.
-- Grad-CAM maps at 32³ input are coarse and did not reliably concentrate on the nodule.
-- Single training run (one seed); no external validation.
+- Labels are radiologists' opinions, not biopsy results; 1 in 3 nodules has a mean score near 3.
+- Explanations: occlusion finds the nodule in about half the cases; Grad-CAM layer4 failed the test.
+- The Hybrid's table branch is almost unused (modality imbalance).
+- One dataset, no external validation, probabilities not calibrated.
 """)
     meta = []
     for k in ("hybrid", "resnet"):

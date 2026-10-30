@@ -10,6 +10,10 @@ explained (``sign=+1`` malignant evidence, ``sign=-1`` benign evidence).
 
 Native CAM resolution for a 32^3 input: layer4 -> 4x2x2, layer3 -> 8x4x4 (very coarse).
 Works for both ``HybridNoduleNet`` and ``Pure3DResNet`` (both expose ``.backbone``).
+
+Phase 7 step R measured these maps on all 151 test nodules (results/phase7_R/EXPLAIN_SUMMARY.md):
+layer4 scored like an untrained network (hit rate 15%), occlusion localised best (hit rate ~50%).
+So :func:`occlusion_map` is the default explanation from Phase 7 step E on.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 VALID_LAYERS = ("layer1", "layer2", "layer3", "layer4")
+OCCLUSION = "occlusion"  # explain(..., layer="occlusion") uses occlusion_map() instead of Grad-CAM
 
 
 def get_target_block(model: nn.Module, layer: str = "layer4") -> nn.Module:
@@ -81,10 +86,46 @@ class GradCAM3D:
         return cam, float(logit.detach()), native  # type: ignore[return-value]
 
 
+@torch.no_grad()
+def occlusion_map(model: nn.Module, volume: torch.Tensor, tabular: Optional[torch.Tensor], sign: float = 1.0,
+                  size: int = 8, stride: int = 4, fill: float = 0.0, batch: int = 128) -> np.ndarray:
+    """Occlusion sensitivity for ONE sample: hide a ``size``^3 cube (``fill`` 0 = -1000 HU, air) at every
+    ``stride`` step and record how much the explained logit (``sign`` * logit) drops. Each voxel gets the
+    mean drop of the cubes covering it; ReLU'd and scaled to [0, 1].
+
+    ``volume`` is ``(1, D, H, W)`` or ``(1, 1, D, H, W)``; ``tabular`` is ``(F,)`` / ``(1, F)`` or None.
+    For 32^3 with size 8 / stride 4: 7^3 = 343 forward passes.
+    """
+    model.eval()
+    vol = volume if volume.ndim == 5 else volume[None]
+    tab = None if tabular is None else (tabular if tabular.ndim == 2 else tabular[None])
+    run = (lambda v, t: model(v, t)) if tab is not None else (lambda v, t: model(v))
+    n = vol.shape[-1]
+    starts = list(range(0, n - size + 1, stride))
+    pos = [(z, y, x) for z in starts for y in starts for x in starts]
+    base = float(run(vol, tab).float().squeeze())
+    drops = []
+    for i in range(0, len(pos), batch):
+        chunk = pos[i:i + batch]
+        v = vol.repeat(len(chunk), 1, 1, 1, 1)
+        for k, (z, y, x) in enumerate(chunk):
+            v[k, 0, z:z + size, y:y + size, x:x + size] = fill
+        t = None if tab is None else tab.repeat(len(chunk), 1)
+        drops.append(sign * (base - run(v, t).float().squeeze(1).cpu().numpy()))
+    drop = np.concatenate(drops)
+    heat, cnt = np.zeros((n, n, n)), np.zeros((n, n, n))
+    for d, (z, y, x) in zip(drop, pos):
+        heat[z:z + size, y:y + size, x:x + size] += d
+        cnt[z:z + size, y:y + size, x:x + size] += 1
+    heat = np.clip(heat / np.maximum(cnt, 1), 0, None)
+    return (heat / heat.max()).astype(np.float32) if heat.max() > 0 else heat.astype(np.float32)
+
+
 def explain(model: nn.Module, volume: torch.Tensor, tabular: Optional[torch.Tensor], layer: str,
             threshold: float, target: str = "predicted") -> Dict[str, Any]:
     """Convenience wrapper: Grad-CAM + prediction for one sample.
 
+    ``layer``: ``"occlusion"`` (default choice since Phase 7) or a ResNet stage for Grad-CAM.
     ``target``: ``"predicted"`` explains the model's own decision at ``threshold``; ``"malignant"`` always
     explains evidence for the malignant class. Returns cam, logit, prob, predicted label, native shape.
     """
@@ -96,8 +137,12 @@ def explain(model: nn.Module, volume: torch.Tensor, tabular: Optional[torch.Tens
     prob = float(1.0 / (1.0 + np.exp(-logit0)))
     pred = int(prob >= threshold)
     sign = 1.0 if (target == "malignant" or pred == 1) else -1.0
-    with GradCAM3D(model, get_target_block(model, layer)) as engine:
-        cam, logit, native = engine(volume, tabular, sign=sign)
+    if layer == OCCLUSION:
+        cam, logit = occlusion_map(model, volume, tabular, sign=sign), logit0
+        native = (7, 7, 7)  # 8 mm cubes every 4 mm on a 32 mm patch
+    else:
+        with GradCAM3D(model, get_target_block(model, layer)) as engine:
+            cam, logit, native = engine(volume, tabular, sign=sign)
     return {"cam": cam, "logit": logit, "prob_malignant": prob, "predicted": pred,
             "native_shape": native, "explained": "malignant" if sign > 0 else "benign"}
 

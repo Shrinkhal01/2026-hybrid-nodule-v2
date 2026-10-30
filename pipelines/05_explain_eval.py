@@ -40,7 +40,7 @@ from sklearn.metrics import roc_auc_score
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.gradcam import get_target_block  # noqa: E402
+from models.gradcam import get_target_block, occlusion_map  # noqa: E402
 from models.hybrid_net import HybridNoduleNet, Pure3DResNet  # noqa: E402
 from models.xai_metrics import center_prior, localisation, spearman_maps  # noqa: E402
 from pipelines.common import (  # noqa: E402
@@ -110,31 +110,6 @@ def gradcam_batch(model, vols, tabs, signs, layer: str, device, bs: int = 32):
     return np.concatenate(cams), native
 
 
-@torch.no_grad()
-def occlusion_map(model, vol, tab, sign: float, device, size: int = 8, stride: int = 4,
-                  fill: float = 0.0) -> np.ndarray:
-    """Hide a size^3 cube (fill 0 = -1000 HU, air) at every stride step; heat = how much the
-    explained logit drops, averaged over the cubes covering each voxel; ReLU'd, scaled to [0, 1]."""
-    n = vol.shape[-1]
-    starts = list(range(0, n - size + 1, stride))
-    pos = [(z, y, x) for z in starts for y in starts for x in starts]
-    v1, t1 = vol[None].to(device), tab[None].to(device)
-    base = float(model(v1, t1).float().squeeze())
-    batch = v1.repeat(len(pos), 1, 1, 1, 1)
-    for k, (z, y, x) in enumerate(pos):
-        batch[k, 0, z:z + size, y:y + size, x:x + size] = fill
-    out = []
-    for i in range(0, len(pos), 128):
-        out.append(model(batch[i:i + 128], t1.repeat(len(batch[i:i + 128]), 1)).float().squeeze(1).cpu())
-    drop = sign * (base - torch.cat(out).numpy())
-    heat, cnt = np.zeros((n, n, n)), np.zeros((n, n, n))
-    for d, (z, y, x) in zip(drop, pos):
-        heat[z:z + size, y:y + size, x:x + size] += d
-        cnt[z:z + size, y:y + size, x:x + size] += 1
-    heat = np.clip(heat / np.maximum(cnt, 1), 0, None)
-    return (heat / heat.max()).astype(np.float32) if heat.max() > 0 else heat.astype(np.float32)
-
-
 def auc(y, p) -> float:
     return float(roc_auc_score(y, p))
 
@@ -194,8 +169,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         rnd = random_copy(model, len(cols), args.seed + 1000, device)
         maps["random_weights_layer3"], _ = gradcam_batch(rnd, vols, tabs, signs, "layer3", device)
         if not args.no_occlusion:
-            maps["occlusion_8mm"] = np.stack([occlusion_map(model, vols[i], tabs[i], float(signs[i]), device)
-                                              for i in range(len(y))])
+            maps["occlusion_8mm"] = np.stack([occlusion_map(model, vols[i].to(device), tabs[i].to(device),
+                                                            float(signs[i])) for i in range(len(y))])
         maps["centre_prior"] = np.repeat(prior[None], len(y), axis=0)
 
         for method, m in maps.items():
