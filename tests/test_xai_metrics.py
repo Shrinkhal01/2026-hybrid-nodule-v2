@@ -41,6 +41,13 @@ def test_corner_map_scores_below_one_and_misses():
     assert m["concentration"] < 1.0 and m["hit"] == 0.0 and m["com_dist_mm"] > 10
 
 
+def test_flat_topped_map_uses_the_plateau_centre():
+    """Occlusion maps have flat tops: a centred 8 mm plateau must count as a hit, whatever argmax says."""
+    cam = np.zeros((32, 32, 32))
+    cam[12:20, 12:20, 12:20] = 1.0                 # argmax would return the corner (12,12,12), 6.1 mm off
+    assert localisation(cam, diameter_mm=8)["hit"] == 1.0
+
+
 def test_all_zero_map_is_flagged_not_scored():
     m = localisation(np.zeros((32, 32, 32)), diameter_mm=10)
     assert m["all_zero"] == 1.0 and np.isnan(m["concentration"])

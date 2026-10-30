@@ -7,7 +7,10 @@ so a ball with the nodule's diameter around the centre is a simple "bull's-eye":
     mass_in       share of the heat map's total mass inside the ball
     vol_frac      share of the cube's voxels inside the ball (what a flat map would score)
     concentration mass_in / vol_frac          1.0 = no better than a flat map, >1 = focused on the nodule
-    hit           the hottest voxel lies inside the ball (grown by `tol_mm`) -> "pointing game"
+    hit           the hottest point lies inside the ball (grown by `tol_mm`) -> "pointing game".
+                  The hottest point is the centre of ALL voxels sharing the maximum: occlusion maps
+                  have flat 4 mm plateaus, and argmax would pick the plateau's first corner instead
+                  (bug found by tests/test_occlusion_device.py in Phase 7 step E; fixed here).
     com_dist_mm   distance from the map's centre of mass to the patch centre
 
 Caveat (shown in every report): because nodules sit at the centre, a map that ALWAYS lights the
@@ -57,9 +60,11 @@ def localisation(cam: np.ndarray, diameter_mm: float, tol_mm: float = 2.0) -> Di
         return {"mass_in": np.nan, "vol_frac": vol_frac, "concentration": np.nan, "hit": np.nan,
                 "com_dist_mm": np.nan, "all_zero": 1.0}
     mass_in = float((cam * mask).sum() / total)
-    peak = np.unravel_index(int(cam.argmax()), cam.shape)
-    hit = float(ball_mask(diameter_mm, n, grow_mm=tol_mm)[peak])
     idx = np.indices(cam.shape, dtype=np.float64)
+    top = cam >= cam.max() * (1 - 1e-6)                      # every voxel tied for the maximum
+    peak = np.array([idx[i][top].mean() for i in range(3)])  # centre of the hottest plateau
+    r = max(float(diameter_mm) / 2.0, 2.0) + tol_mm
+    hit = float(np.linalg.norm(peak - centre(n)) <= r)
     com = np.array([(idx[i] * cam).sum() / total for i in range(3)])
     return {"mass_in": mass_in, "vol_frac": vol_frac, "concentration": mass_in / vol_frac, "hit": hit,
             "com_dist_mm": float(np.linalg.norm(com - centre(n))), "all_zero": 0.0}
