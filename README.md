@@ -1,39 +1,62 @@
 # Hybrid Explainable AI for 3D Lung Nodule Malignancy Prediction
 
-A dual-branch framework that fuses a **3D ResNet-18** (CT patch) with a **tabular radiomics/consensus MLP** through a learned gate, benchmarked against an image-only 3D ResNet-18 and a classical Random Forest, with **3D Grad-CAM** explanations and an interactive **Streamlit** app. Built on the LIDC-IDRI 1,176-nodule benchmark.
+A dual-branch model that fuses a **3D ResNet-18** (CT patch) with a **tabular MLP** (15 features) through a learned gate. It is benchmarked against an image-only 3D ResNet-18 and a classical Random Forest, with **occlusion and Grad-CAM explanations scored on every test nodule**, and an interactive **Streamlit** app. Built on the LIDC-IDRI 1,176-nodule benchmark.
 
 > **Research prototype. Not a medical device; not validated for clinical use.**
+> Labels are radiologists' malignancy ratings, not biopsy results.
 
 ---
 
-## Key results (held-out test set, n = 151 nodules)
+## Key results (held-out test set, 151 nodules, 5 training seeds)
 
-| Model | ROC-AUC (95% CI) | Accuracy | Sensitivity | Specificity | Precision | F1 | FN | FP |
-|:--|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| A: Balanced Random Forest (tabular) | 0.918 (0.867-0.962) | **0.887** | 0.838 | **0.928** | **0.905** | **0.870** | 11 | **6** |
-| B: 3D ResNet-18 (image only) | 0.920 (0.869-0.959) | 0.808 | 0.882 | 0.747 | 0.741 | 0.805 | 8 | 21 |
-| C: Hybrid Net (image + radiomics) | **0.937** (0.895-0.970) | 0.841 | **0.897** | 0.795 | 0.782 | 0.836 | **7** | 17 |
+Patches resampled to 1 mm voxels, patient-disjoint split, every model trained 5 times (seeds 42–46). Run `results/phase7_R`, which replicates `results/phase7_A`.
 
-Thresholds are chosen by Youden's J on the validation set (A 0.46, B 0.48, C 0.55); the test set is used once, after model selection.
+| Inputs | Model | Test AUC, mean ± SD over seeds | 5-seed ensemble AUC [95% CI] |
+|:--|:--|:-:|:-:|
+| all 15 features | A: Random Forest | 0.942 ± 0.004 | 0.943 [0.900, 0.980] |
+| all 15 features | B: 3D ResNet-18 (image only) | 0.897 ± 0.011 | 0.907 [0.856, 0.953] |
+| all 15 features | C: Hybrid | 0.909 ± 0.015 | 0.923 [0.875, 0.962] |
+| **12 image features only** | A: Random Forest | **0.666** ± 0.010 | 0.668 [0.573, 0.754] |
+| **12 image features only** | B: 3D ResNet-18 | **0.901** ± 0.011 | 0.913 [0.860, 0.957] |
+| **12 image features only** | C: Hybrid | **0.901** ± 0.015 | 0.915 [0.862, 0.961] |
+
+Reference models with no training randomness: **diameter alone 0.941** [0.897, 0.974]; logistic regression on the 3 radiologist ratings **0.969** [0.941, 0.991]; logistic regression on the 12 image features 0.641 [0.550, 0.729].
 
 **How to read this honestly**
 
-- The hybrid has the highest AUC and the fewest missed malignancies (7 FN vs 11 for the Random Forest), but its AUC gain is **not statistically distinguishable from zero** (paired bootstrap on the same nodules):
+- **Three of the 15 features are radiologist ratings** (diameter, calcification, texture), made by the same readers who gave the malignancy label. With them, everything looks strong; the 3-rating logistic regression beats every model. That number is circular.
+- **Without the ratings, the Random Forest collapses** (0.942 → 0.666; ensemble difference +0.276 [+0.197, +0.364], 5/5 seeds). It was mostly reading the answer key.
+- **The deep models learn from the CT image.** Without the ratings, the Hybrid changes by +0.008 [−0.005, +0.022] (p = 0.25). That is within the noise of the image-only ResNet control (−0.006).
+- **The Hybrid is not better than the image-only ResNet** (0.901 vs 0.901 with image features). Shuffling its feature table between nodules costs only 0.03 AUC; shuffling the images costs 0.32. The fusion gate passes almost nothing from the table (*modality imbalance*).
+- **One training run moves by about ±0.01 AUC by chance.** The same Hybrid with seed 42, trained three times, scored 0.912 / 0.930 / 0.919, because GPU training is not bit-reproducible. So results are reported as mean ± SD over seeds.
+- **The headline:** from the CT image alone, the models reach **about 0.90 AUC** against radiologist consensus labels. This agrees with published LIDC findings that nodule size alone is a strong baseline ([Pitfalls of Sample Selection, 2021](https://arxiv.org/abs/2108.05386)) and that LIDC labels carry reader bias ([Re-thinking and Re-labeling LIDC-IDRI, 2022](https://arxiv.org/abs/2207.14238)).
+- **Earlier claim superseded:** Part 2 reported a Hybrid AUC of 0.937 from one run on un-resampled patches. The 5-seed results above do not support it (see the Phase 7 notes in `docs/PHASE_7_decisions.md`).
 
-  | Comparison | AUC difference [95% CI] | p (bootstrap) | McNemar p (per-nodule correctness) |
-  |:--|:-:|:-:|:-:|
-  | C Hybrid vs A Random Forest | +0.019 [-0.017, +0.060] | 0.32 | 0.21 |
-  | C Hybrid vs B 3D ResNet | +0.018 [-0.007, +0.044] | 0.16 | 0.23 |
-  | B 3D ResNet vs A Random Forest | +0.002 [-0.038, +0.042] | 0.93 | 0.023 |
+Full tables: `results/phase7_R/SUMMARY.md` (accuracy) and `results/phase7_R/EXPLAIN_SUMMARY.md` (explanations).
 
-- The Random Forest is the best model on accuracy, specificity, precision and F1, and is significantly more accurate than the image-only ResNet at the chosen thresholds (McNemar p = 0.023).
-- The Random Forest leans on radiologist-rated inputs: **diameter alone carries 47% of its feature importance and the three radiologist-rated features together 60%**. The tabular branch of the hybrid receives the same inputs, so part of any hybrid gain may come from annotator ratings rather than image-derived information (see *Limitations*).
-- Single training run (seed 42) on 151 test nodules: the numbers carry real sampling uncertainty.
+---
 
-![ROC curves](results/figures/fig_roc_curves.png)
-![Paired AUC differences](results/figures/fig_auc_differences.png)
+## Explanations, scored on all 151 test nodules
 
-More figures: [metrics](results/figures/fig_metrics_comparison.png) | [confusion matrices](results/figures/fig_confusion_matrices.png) | [training curves](results/figures/fig_training_curves.png) | [RF importance](results/figures/fig_rf_feature_importance.png) | [probability distributions](results/figures/fig_probability_distributions.png) | [dataset splits](results/figures/fig_dataset_splits.png). Full tables: `results/model_comparison_metrics.csv`, `results/figures/significance_tests.csv`.
+Each heat map is scored against a ball with the nodule's diameter at the patch centre (`models/xai_metrics.py`):
+
+- **Concentration** is the share of heat on the nodule divided by the share of the cube it fills, where 1.0 means a flat map.
+- **Hit** means the hottest point lies on the nodule.
+- The trivial *centre prior*, a blob that always lights the centre, is the bar to compare against.
+
+| Hybrid (all features), 5 seeds | Concentration (1 = flat) | Hit rate | Centre of heat → nodule centre |
+|:--|:-:|:-:|:-:|
+| Grad-CAM layer4 (Part 2 method, 4×2×2) | 1.23 | 15% | 3.0 mm |
+| same network with **random weights** (sanity check) | 1.11 | 27% | 6.6 mm |
+| Grad-CAM layer3 (8×4×4) | 1.83 | 38% | 5.7 mm |
+| **Occlusion** (8 mm cube, stride 4 mm) | **2.24** | ≥ 52%\* | **2.5 mm** |
+| centre prior (trivial reference) | 8.40 | 100% | 0.0 mm |
+
+\* Occlusion maps have flat 4 mm plateaus. The first scoring used `argmax`, which picks a plateau corner, so occlusion hit rates were **understated**. The bug was found by a unit test and fixed on 30 Oct 2026; the re-score is pending (`FORCE=1 bash scripts/explain_on_gpu.sh phase7_R`). Concentration and distance were not affected.
+
+- **Layer4 Grad-CAM (the method used in Part 2) scores like an untrained network**, so it does not explain the model.
+- **Occlusion localises best** and is now the default (`pipelines/03_evaluate_xai.py`, the app). Most heat still spreads into the surrounding tissue, because an 8 mm occluder is about the size of the median nodule (9 mm).
+- **Sanity check passed:** rank correlation between trained and random-weights maps is −0.02 to 0.16.
 
 ---
 
@@ -41,102 +64,133 @@ More figures: [metrics](results/figures/fig_metrics_comparison.png) | [confusion
 
 ```mermaid
 flowchart LR
-  A[LIDC-IDRI 1,176 benchmark<br/>NIfTI + metadata] --> B[01_data_pipeline.py<br/>filter, crop 32³, window, 15 features,<br/>series-disjoint split]
-  B --> C[02_train.py<br/>RF / 3D ResNet / Hybrid<br/>Youden threshold on val]
-  C --> D[03_evaluate_xai.py<br/>3D Grad-CAM, 4 cases]
+  A[LIDC-IDRI 1,176 benchmark<br/>NIfTI + metadata] --> B[01_data_pipeline.py<br/>1 mm resampling, 32 mm cube,<br/>15 features, pylidc patient IDs]
+  B --> C[02_train.py<br/>RF / 3D ResNet / Hybrid<br/>--features all or image]
+  C --> D[03_evaluate_xai.py<br/>4 example cases, occlusion]
   C --> E[04_report_figures.py<br/>figures + significance tests]
-  C --> F[app/streamlit_app.py<br/>interactive demo]
+  C --> F[05_explain_eval.py<br/>explanations scored on all test nodules]
+  C --> G[app/streamlit_app.py]
+  S[scripts/train_on_gpu.sh<br/>scripts/explain_on_gpu.sh] -.-> C
+  S -.-> F
 ```
 
-### 1. Data (Day 1)
-- 1,176 nodule sub-volumes (`128 x 128 x 64`) with radiologist consensus metadata. Nodules with mean malignancy score **= 3.0 are excluded** (176), leaving **1,000** (554 benign `< 3`, 446 malignant `> 3`).
-- Volumes are transposed to `(D, H, W)`, centre-cropped to `32 x 32 x 32` (pad -1000 HU), clipped to `[-1000, 400]` HU and min-max scaled to `[0, 1]`.
-- **15 tabular features**: 10 intensity statistics (mean, std, min, max, median, P25, P75, IQR, skewness, kurtosis), 2 tissue densities (solid fraction `> -400` HU, hyperdense fraction `> 100` HU) and 3 radiologist consensus values (mean diameter, calcification, texture).
-- `GroupShuffleSplit` grouped by `SeriesInstanceUID` (546 series; best of 100 seeds for class balance, seed 60); zero series overlap across splits:
+### 1. Data
+- 1,176 nodule sub-volumes (`64 × 128 × 128`) with radiologist consensus metadata. Nodules with mean malignancy **= 3.0 are excluded** (176), leaving **1,000**: 554 benign (`< 3`) and 446 malignant (`> 3`).
+- **Resampling:** every patch is resampled to **1 mm isotropic** voxels and cropped to a **32 mm cube** (32³) around the nodule, with trilinear interpolation.
+  - Before this, the 32-voxel crop covered 14–80 mm in depth depending on the scanner's slice gap (0.45–2.5 mm).
+  - 4 patches need padding (the 0.45 mm scans), and 28 nodules larger than 32 mm are cut at the edge.
+- Values are clipped to `[−1000, 400]` HU and scaled to `[0, 1]`.
+- **15 tabular features:**
+  - 10 intensity statistics
+  - 2 density fractions (solid `> −400` HU, hyperdense `> 100` HU)
+  - 3 radiologist ratings: diameter, calcification, texture
+- **Patient-disjoint split:** patient IDs come from **pylidc**'s annotation database (546 series → **545 patients**). The pipeline fails if a patient appears in two splits.
 
-| Split | Nodules | Benign | Malignant | Malignant % | Series |
+| Split | Nodules | Benign | Malignant | Malignant % | Patients |
 |:--|:-:|:-:|:-:|:-:|:-:|
-| Train | 703 | 389 | 314 | 44.7% | 382 |
+| Train | 703 | 389 | 314 | 44.7% | 381 |
 | Validation | 146 | 82 | 64 | 43.8% | 82 |
 | Test | 151 | 83 | 68 | 45.0% | 82 |
 
-### 2. Models (Day 2)
-- **A - Random Forest**: 150 trees, `max_depth=6`, `class_weight='balanced'`, on the raw 15 features.
-- **B - Pure 3D ResNet-18**: torchvision `r3d_18`, 1-channel stem, `512 -> 128` embedding, head `128 -> 64 -> 1`.
-- **C - Hybrid Net**: the same visual encoder and head, plus a tabular MLP `15 -> 64 -> 64` (BatchNorm, GELU, dropout 0.2) and a **gated fusion**
-  `gate = sigmoid(W[z_v ; z_t])`, `z = gate * z_v + (1 - gate) * W_t z_t`. Tabular features are standardised with **train-set statistics only**.
-- Training (B and C): `BCEWithLogitsLoss` with `pos_weight = 389/314 = 1.239`, AdamW (lr 1e-4, wd 1e-4), `ReduceLROnPlateau` on validation AUC (factor 0.5, patience 5), 40 epochs, batch 32, bf16 autocast, random 3D flips + in-plane 90-degree rotations. The best-validation-AUC epoch is kept (B: epoch 14, val AUC 0.915; C: epoch 19, val AUC 0.923). Trained on an NVIDIA H200 NVL.
-
-### 3. Explainability
-3D Grad-CAM on the last residual block of `layer4` of the hybrid's CNN branch (`--target-layer layer3` for a finer 8x4x4 map), explaining the model's predicted class.
-
-![Grad-CAM, 4 test cases](results/gradcam_hybrid_overlay.png)
-
-| Case | Selection rule | True | P(malignant) | Diameter | Outcome |
-|:--|:--|:-:|:-:|:-:|:--|
-| 1 | Highest-confidence true positive | malignant | 1.000 | 17.9 mm | correct |
-| 2 | Highest-confidence true negative | benign | 0.002 | 7.5 mm | correct |
-| 3 | Smallest-diameter true positive | malignant | 0.752 | 8.3 mm | correct |
-| 4 | Highest-confidence false positive | benign | 0.967 | 5.4 mm | wrong (mean radiologist score 2.67) |
-
-**Important caveat.** At 32^3 input the `layer4` map is only `4 x 2 x 2`, and in all four cases the CAM peak lands on essentially the same voxel (`[., 24, 24]`). The share of CAM mass inside the central `16^3` cube is 0.14-0.17 against 0.125 for a perfectly uniform map ([figure](results/figures/fig_cam_localization.png)). An exploratory check at `layer3` gave 0.08, 0.37, 0.09 and 0.12 for the same cases, with no consistent concentration on the nodule either. **These heatmaps are qualitative and do not demonstrate that the network attends to the nodule.** Grad-CAM also explains only the CNN branch, not the tabular branch.
+### 2. Models
+- **A: Random Forest.** 150 trees, `max_depth=6`, `class_weight='balanced'`.
+- **B: 3D ResNet-18.** torchvision `r3d_18` with a 1-channel stem, a `512 → 128` embedding and a `128 → 64 → 1` head (33.2 M weights).
+- **C: Hybrid.** The same image encoder, plus a tabular MLP (`n → 64 → 64`), joined by a **gated fusion**: `gate = sigmoid(W[z_v ; z_t])` and `z = gate · z_v + (1 − gate) · W_t z_t`.
+- **Training (B and C):**
+  - `BCEWithLogitsLoss` with `pos_weight = 389/314`
+  - AdamW (lr 1e-4, wd 1e-4) and `ReduceLROnPlateau` on validation AUC
+  - 40 epochs, batch 32, bf16 on CUDA
+  - Random flips and in-plane 90° rotations
+  - The best-validation-AUC epoch is kept, and thresholds come from validation (Youden's J)
+- **Ablation:** `--features image` gives the RF and Hybrid only the 12 CT-derived features.
 
 ---
 
 ## Limitations
 
-1. **Scope: classification, not detection.** The benchmark contains patches centred on radiologist-annotated nodules; no nodule detection in full scans is performed.
-2. **Annotator-derived inputs.** Diameter, calcification and texture are radiologist ratings produced alongside the malignancy score. An ablation without them (image-derived features only) is still needed to separate genuine image signal from annotator information.
-3. **No significant advantage for the hybrid** over the baselines on this test set (see the table above).
-4. **Labels are consensus ratings, not pathology.** Malignancy is the mean of up to four radiologists' 1-5 scores; a nodule with a mean of 2.67 is labelled benign (case 4 above).
-5. **Series-level, not patient-level, splitting.** The metadata has no PatientID, so a patient with several scans could straddle splits.
-6. **Single run, single dataset.** One seed, no cross-validation, no external validation, no calibration analysis.
-7. **Grad-CAM resolution** (see above).
+1. **Classification, not detection.** Patches are centred on annotated nodules; nodules are not found in full scans.
+2. **Labels are radiologists' opinions**, not pathology. 333 of 1,000 nodules have a mean score between 2.5 and 3.5, where one reader's vote flips the label.
+3. **Radiologist-rated inputs are circular.** Results with the 3 ratings overstate what the image shows.
+4. **Modality imbalance.** The Hybrid's table branch is almost unused, so the fusion adds no measurable benefit.
+5. **Explanations localise the nodule only about half the time.** Grad-CAM layer4 fails the sanity comparison.
+6. **Probabilities are not calibrated.** The Hybrid is over-confident: Brier 0.151 vs 0.096 for the RF in run 1.
+7. **One dataset, no external validation.** The test set was looked at during Phase 7, so future model choices are made on validation only.
+8. **Whole-cube radiomics.** The 12 image features use the whole 32 mm cube with no nodule mask, which is why they are weak (0.641 in a logistic regression).
 
 ## Repository structure
 
 ```text
 2026-hybrid-nodule-v2/
-├── 01_data_pipeline.py            # Day 1: ingestion, preprocessing, radiomics, splits, self-check
+├── 01_data_pipeline.py           # ingestion, 1 mm resampling, features, pylidc patient IDs, split, self-check
 ├── models/
-│   ├── hybrid_net.py              # HybridNoduleNet, Pure3DResNet
-│   ├── baseline_rf.py             # Balanced Random Forest baseline
-│   └── gradcam.py                 # 3D Grad-CAM (used by the XAI script and the app)
+│   ├── hybrid_net.py             # HybridNoduleNet, Pure3DResNet
+│   ├── baseline_rf.py            # Balanced Random Forest
+│   ├── gradcam.py                # 3D Grad-CAM + occlusion maps (used by scripts and the app)
+│   └── xai_metrics.py            # ball-mask scoring of heat maps
 ├── pipelines/
-│   ├── common.py                  # dataset, augmentation, scaler, metrics
-│   ├── 02_train.py                # A/B/C training + benchmark
-│   ├── 03_evaluate_xai.py         # Grad-CAM cases -> figure + audit JSON
-│   └── 04_report_figures.py       # report figures + significance tests
-├── app/streamlit_app.py           # interactive demo
-├── data/{raw,processed}/          # raw is git-ignored; processed holds patches + CSV manifests
-├── results/                       # checkpoints, metrics, figures, audit (checkpoints git-ignored)
-└── requirements.txt
+│   ├── common.py                 # dataset, feature sets, device (CUDA -> Apple MPS -> CPU), metrics
+│   ├── 02_train.py               # A/B/C training + benchmark (--features all|image, --seed)
+│   ├── 03_evaluate_xai.py        # 4 example cases (occlusion by default)
+│   ├── 04_report_figures.py      # report figures + significance tests
+│   └── 05_explain_eval.py        # explanations scored on all test nodules + sanity + dependence
+├── scripts/
+│   ├── train_on_gpu.sh           # feature sets x seeds -> results/<run>/, then aggregate_runs.py
+│   ├── explain_on_gpu.sh         # 05 for every seed, then aggregate_explain.py
+│   └── phase7_resampling_stats.py
+├── tests/                        # pytest, CPU only
+├── docs/                         # PROJECT_MAP.md, PHASE_7*.md (decisions log), figures
+├── app/streamlit_app.py
+├── data/{raw,processed}/         # raw is git-ignored; processed holds patches + CSV manifests
+└── results/<run>/<features>/seed_<n>/   # metrics, predictions, figures (checkpoints git-ignored)
 ```
 
 ## Reproduce
 
 ```bash
 pip install -r requirements.txt
+python -m pytest tests/ -q                               # CPU checks
 
-python 01_data_pipeline.py            # Day 1 (needs data/raw/LIDC-IDRI + LIDC-IDRI_1176.npy)
-python pipelines/02_train.py          # trains A/B/C, writes results/ (needs a CUDA GPU; --allow-cpu for debugging)
-python pipelines/03_evaluate_xai.py   # Grad-CAM figure + audit  (--target-layer layer3 optional)
-python pipelines/04_report_figures.py # figures + significance tests (CPU only)
+python 01_data_pipeline.py --no-download                 # data (needs data/raw/LIDC-IDRI + LIDC-IDRI_1176.npy)
+
+# GPU server (one H200): 2 feature sets x 5 seeds, then explanation scores
+GPU=0 bash scripts/train_on_gpu.sh phase7_R              # ~12 min
+GPU=0 bash scripts/explain_on_gpu.sh phase7_R            # ~10 min
+
+# MacBook (Apple MPS if it works, else CPU): small smoke run
+python pipelines/02_train.py --allow-cpu --limit 64 --epochs 2 --num-workers 0 --results-dir /tmp/mac
 ```
 
 ## Interactive app
 
 ```bash
-streamlit run app/streamlit_app.py
-# remote GPU server:  streamlit run app/streamlit_app.py --server.port 8501 --server.headless true
-#                     ssh -L 8501:localhost:8501 <user>@<server>   ->  http://localhost:8501
+NODULE_RESULTS_DIR=results/phase7_R/all/seed_42 streamlit run app/streamlit_app.py
+# remote GPU server:  ... --server.port 8642 --server.headless true
+#                     ssh -L 8642:localhost:8642 <user>@<server>   ->  http://localhost:8642
 ```
 
-Tabs: **Test-set explorer** (pick any test nodule or filter by hybrid TP/TN/FP/FN, compare the three models' probabilities, browse axial/coronal/sagittal slices with Grad-CAM overlay at `layer4`/`layer3`), **Custom input** (upload a `32x32x32` `.npy` patch + enter the 15 features), **Model performance** (tables and figures) and **About & limitations**. It needs `results/best_hybrid_net.pth`, `results/best_pure_resnet.pth` and `results/baseline_rf.joblib` (checkpoints are ~133 MB each and are not stored in git); set `NODULE_RESULTS_DIR` / `NODULE_DATA_DIR` to use other locations.
+The app has four tabs:
+- **Test-set explorer:** pick a nodule, compare the three models, and view occlusion or Grad-CAM maps with their nodule score.
+- **Custom input**
+- **Model performance**
+- **About & limitations**
+
+The app needs a run trained with all 15 features (checkpoints are about 133 MB each and are not stored in git).
 
 ## Data and references
 
-- **LIDC-IDRI**: Armato SG III et al., *Medical Physics* 38(2):915-931, 2011; hosted by The Cancer Imaging Archive (Clark K et al., *J Digit Imaging* 26(6):1045-1057, 2013). <https://www.cancerimagingarchive.net/collection/lidc-idri/>
-- **1,176-nodule benchmark**: LUNA22-ISMI release of LIDC-IDRI nodules, <https://zenodo.org/record/6559584> (CC BY 4.0).
-- **3D ResNet-18 (`r3d_18`)**: Tran D et al., *A Closer Look at Spatiotemporal Convolutions for Action Recognition*, CVPR 2018.
-- **Grad-CAM**: Selvaraju RR et al., *Grad-CAM: Visual Explanations from Deep Networks via Gradient-based Localization*, ICCV 2017.
+- **LIDC-IDRI:** Armato SG III et al., *Medical Physics* 38(2):915–931, 2011.
+  - **Data citation:** Armato SG III et al. (2015). Data From LIDC-IDRI [Data set]. The Cancer Imaging Archive. **https://doi.org/10.7937/K9/TCIA.2015.LO9QL9SX**
+  - TCIA: Clark K et al., *J Digit Imaging* 26(6):1045–1057, 2013.
+- **1,176-nodule benchmark:** the LUNA22-ISMI release of LIDC-IDRI nodules, <https://zenodo.org/record/6559584> (CC BY 4.0).
+- **pylidc:** Hancock MC, Magnan JF, *J Med Imaging* 3(4):044504, 2016.
+- **3D ResNet-18 (`r3d_18`):** Tran D et al., CVPR 2018.
+- **Grad-CAM:** Selvaraju RR et al., ICCV 2017.
+- **Occlusion sensitivity:** Zeiler MD, Fergus R, ECCV 2014.
+- **Sanity checks for saliency maps:** Adebayo J et al., NeurIPS 2018.
+- **Related LIDC findings:**
+  - *The Pitfalls of Sample Selection: A Case Study on Lung Nodule Classification*, 2021, <https://arxiv.org/abs/2108.05386>
+  - *Re-thinking and Re-labeling LIDC-IDRI for Robust Pulmonary Cancer Prediction*, 2022, <https://arxiv.org/abs/2207.14238>
+
+## Credits
+
+Built by Shrinkhal, with **Claude** (Anthropic) as a coding assistant.

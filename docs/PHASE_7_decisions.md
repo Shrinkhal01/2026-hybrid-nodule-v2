@@ -101,3 +101,27 @@ Part 2 judged Grad-CAM on 4 hand-picked cases. Step R scores every map on all 15
 | **A: Grad-CAM at layer2 / 3 / 4** | layer4 is only 4×2×2; finer layers might localise better | only layer4 (Part 2) | native shapes 16×8×8 / 8×4×4 / 4×2×2 for a 32³ input |
 | **R: Random-weights sanity check** (Adebayo et al. 2018) | if a map looks the same for an untrained network, it explains nothing | none | NOT MEASURED until the GPU run |
 | **D: Shuffle images / table rows between nodules**, 10 repeats; per-feature permutation | explains the half Grad-CAM can't see (the table branch), as an AUC drop | gate values only (show mixing, not reliance) | NOT MEASURED until the GPU run |
+
+### Step R results (`results/phase7_R/EXPLAIN_SUMMARY.md`, 2 feature sets x 5 seeds, 151 test nodules)
+| Hybrid, all 15 features | concentration (1 = flat) | hit rate | centre-of-mass distance |
+|---|---|---|---|
+| Grad-CAM layer4 (Part 2 method) | 1.23 ± 0.03 | 15% | 3.0 mm |
+| random-weights network (sanity) | 1.11 ± 0.07 | 27% | 6.6 mm |
+| Grad-CAM layer3 | 1.83 ± 0.44 | 38% | 5.7 mm |
+| Grad-CAM layer2 | 1.07 ± 0.32 | 25% | 5.1 mm |
+| **occlusion 8 mm** | **2.24 ± 1.13** | **52%** | **2.5 mm** |
+| centre prior (trivial bar) | 8.40 | 100% | 0.0 mm |
+- Facts: layer4 Grad-CAM scores like an untrained network; occlusion localises best; all methods stay far below the centre prior. Sanity correlations trained vs random: −0.02 to 0.16 (maps depend on training).
+- Dependence: shuffling images drops Hybrid AUC 0.91 → 0.59 (all) / 0.90 → 0.51 (image); shuffling the table drops it by 0.034 ± 0.034 (all) / −0.001 (image). Top table features (all): calcification +0.014, diameter +0.010, texture +0.005.
+- Decision: explanations switch to occlusion (and layer3) in step E; the Hybrid's table branch is measured as almost unused (modality imbalance, confirmed).
+
+## Step E: extras (MEDIC; calibration moved to Phase 8)
+
+| Used | Why | Rejected alternative | Number that justified it |
+|---|---|---|---|
+| **M: device order CUDA → Apple MPS → CPU**, MPS only if a tiny 3D conv + 3D pooling test passes (`_mps_works`) | ground rule: run on a MacBook; some PyTorch/macOS versions lack 3D MPS kernels, so test instead of trusting `is_available()` | MPS whenever available; CPU only | `tests/test_occlusion_device.py` (fallback logic); MPS itself NOT MEASURED (needs your Mac: `python pipelines/02_train.py --allow-cpu --limit 64 --epochs 2 --num-workers 0 --results-dir /tmp/mac`) |
+| **E: occlusion = default explanation** in `03_evaluate_xai.py` and the app; one shared `occlusion_map()` in `models/gradcam.py` | best localisation in step R; layer4 Grad-CAM scored like an untrained network | keep layer4 Grad-CAM | step R: occlusion hit ≥ 52%, distance 2.5 mm vs layer4 15%, 3.0 mm |
+| **Hit = centre of the hottest plateau** (bug fix) | occlusion maps have flat 4 mm plateaus; argmax picked the plateau's first corner | argmax | toy test: a centred 8 mm plateau → argmax corner 6.1 mm off = "miss"; plateau centre = hit. Step R occlusion hit rates were understated → re-score with `FORCE=1 bash scripts/explain_on_gpu.sh phase7_R` |
+| **D: README rewritten**: 5-seed numbers, ablation, references, explanation scores, TCIA DOI 10.7937/K9/TCIA.2015.LO9QL9SX | Part 2's 0.937 came from one run on old patches; ground rule: cite the DOI | patch the old README | `results/phase7_R/SUMMARY.md`, `EXPLAIN_SUMMARY.md` |
+| **I: modality imbalance** written up (README limitations, app text) | measured, not guessed | leave as hypothesis | shuffle table: −0.03 AUC vs shuffle image: −0.32 (all features) |
+| App tested headless (`streamlit.testing`) on a tiny CPU model | catches runtime errors in the UI code | trust py_compile | 0 exceptions; occlusion is the default method |

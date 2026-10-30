@@ -2,6 +2,7 @@
 # Phase 7 step R: score the explanations of every trained seed in a run, then summarise.
 #
 #   GPU=1 bash scripts/explain_on_gpu.sh phase7_A
+#   FORCE=1 GPU=1 bash scripts/explain_on_gpu.sh phase7_A     # re-score seeds that are already done
 #
 # Needs the .pth checkpoints, so run it on the GPU server where the run was trained.
 # Safe to re-run: seeds that already have explain/summary.json are skipped.
@@ -22,7 +23,7 @@ found=0
 for SEED_DIR in "${RUN_DIR}"/*/seed_*; do
   [ -e "${SEED_DIR}/best_hybrid_net.pth" ] || { echo "--- ${SEED_DIR}: no checkpoint here, skipping"; continue; }
   found=$((found + 1))
-  if [ -e "${SEED_DIR}/explain/summary.json" ]; then echo "--- ${SEED_DIR}: already done"; continue; fi
+  if [ -e "${SEED_DIR}/explain/summary.json" ] && [ "${FORCE:-0}" != "1" ]; then echo "--- ${SEED_DIR}: already done"; continue; fi
   echo "--- ${SEED_DIR}: explain"
   python pipelines/05_explain_eval.py --results-dir "${SEED_DIR}" ${CPU_FLAG} > "${SEED_DIR}/explain_stdout.txt"
   tail -n 25 "${SEED_DIR}/explain_stdout.txt"

@@ -27,7 +27,8 @@ Usage
     python pipelines/02_train.py --epochs 2 --limit 64 --results-dir /tmp/smoke   # quick smoke test
     python pipelines/02_train.py --features image --seed 43 --results-dir results/x  # Phase 7 ablation:
         RF + Hybrid get only the 12 image-derived features (no radiologist ratings)
-    (CUDA is required by default; add --allow-cpu only for debugging without a GPU)
+    (CUDA is required by default; --allow-cpu permits a Mac (Apple MPS if it works, else CPU) for small runs)
+    python pipelines/02_train.py --allow-cpu --limit 64 --epochs 2 --num-workers 0 --results-dir /tmp/mac   # MacBook
 """
 from __future__ import annotations
 
@@ -174,8 +175,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=4, help="DataLoader workers (pin_memory is on for CUDA)")
     p.add_argument("--pretrained", action="store_true", help="init the 3D ResNet from Kinetics-400 (downloads)")
     p.add_argument("--no-amp", action="store_true", help="disable bf16 autocast on CUDA")
-    p.add_argument("--allow-cpu", action="store_true",
-                   help="permit running without CUDA (debug only; by default a CUDA GPU is required)")
+    p.add_argument("--allow-cpu", action="store_true",  # Mac: Apple MPS if it works, else CPU
+                   help="permit running without CUDA: Apple MPS on a Mac if it works, else CPU (small runs)")
     p.add_argument("--limit", type=int, default=None, help="DEBUG: subsample each split to ~N rows")
     p.add_argument("--n-boot", type=int, default=1000, help="bootstrap resamples for the test AUC CI")
     return p.parse_args(argv)

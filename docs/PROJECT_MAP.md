@@ -1,6 +1,7 @@
 # Project map: where am I?
 
-> **Now:** Phase 7 (SPARE), steps **S, P, A done** -> next is **R (Re-explain: fix Grad-CAM)**
+> **Now:** Phase 7 (SPARE), steps **S, P, A, R, E done** -> re-score explanations (plateau fix), write `docs/PHASE_7.md`, then merge.
+> **Next phase:** Phase 8 = better model (**BASIC**: Bar, Architecture, Stronger augmentation, Integration, Calibration).
 > **Work on branch:** `phase-7-resampling` (not `main`!)
 > Read this file first whenever you come back after a break.
 
@@ -75,9 +76,10 @@ What it means:
 - [x] **S** Spacing: 1 mm isotropic, 32 mm cube
 - [x] **P** Patient check: 545 patients, 0 shared between splits
 - [x] **A** Ablation + 5 seeds
-- [ ] **R** Re-explain: Grad-CAM map is 4x2x2 and points at the **same corner** for every nodule
-  (central mass 0.15-0.17 vs 0.125 for a flat map) -> it does not show the nodule yet
-- [ ] **E** Extras (pick from the list)
+- [x] **R** Re-explain: all 151 test nodules scored -> layer4 Grad-CAM = untrained network (hit 15%),
+  occlusion best (hit >= 52%, re-score pending after the plateau fix), Hybrid ignores its table
+- [x] **E** Extras (MEDIC): Mac MPS fallback, occlusion as default explanation, DOI + honest README,
+  imbalance note (calibration moved to Phase 8)
 - [ ] `docs/PHASE_7.md`: your own notes, from memory (still empty)
 - [ ] Hand-written core: `resample_crop_iso` (spec + tests in `PHASE_7_decisions.md`)
 

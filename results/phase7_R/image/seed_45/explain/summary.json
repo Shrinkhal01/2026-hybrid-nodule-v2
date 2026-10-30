@@ -1,0 +1,207 @@
+{
+  "results_dir": "results/phase7_R/image/seed_45",
+  "n_test": 151,
+  "feature_set": "image",
+  "models": {
+    "C: Hybrid": {
+      "threshold": 0.7065955400466919,
+      "native_shapes": {
+        "layer2": [
+          16,
+          8,
+          8
+        ],
+        "layer3": [
+          8,
+          4,
+          4
+        ],
+        "layer4": [
+          4,
+          2,
+          2
+        ]
+      },
+      "sanity_spearman_trained_vs_random_layer3_mean": 0.1071790290404291,
+      "methods": {
+        "centre_prior": {
+          "concentration_median": 8.4,
+          "concentration_mean": 7.2336,
+          "hit_rate": 1.0,
+          "mass_in_mean": 0.2521,
+          "com_dist_mm_mean": 0.0,
+          "all_zero": 0.0
+        },
+        "gradcam_layer2": {
+          "concentration_median": 0.6472,
+          "concentration_mean": 0.9301,
+          "hit_rate": 0.1788,
+          "mass_in_mean": 0.1123,
+          "com_dist_mm_mean": 5.4717,
+          "all_zero": 0.0
+        },
+        "gradcam_layer3": {
+          "concentration_median": 0.9334,
+          "concentration_mean": 0.7731,
+          "hit_rate": 0.382,
+          "mass_in_mean": 0.139,
+          "com_dist_mm_mean": 5.9342,
+          "all_zero": 62.0
+        },
+        "gradcam_layer4": {
+          "concentration_median": 1.2412,
+          "concentration_mean": 1.2125,
+          "hit_rate": 0.1523,
+          "mass_in_mean": 0.0949,
+          "com_dist_mm_mean": 2.5846,
+          "all_zero": 0.0
+        },
+        "occlusion_8mm": {
+          "concentration_median": 1.1022,
+          "concentration_mean": 4.1111,
+          "hit_rate": 0.4503,
+          "mass_in_mean": 0.2712,
+          "com_dist_mm_mean": 2.3534,
+          "all_zero": 0.0
+        },
+        "random_weights_layer3": {
+          "concentration_median": 1.089,
+          "concentration_mean": 1.173,
+          "hit_rate": 0.1921,
+          "mass_in_mean": 0.108,
+          "com_dist_mm_mean": 6.9671,
+          "all_zero": 0.0
+        }
+      }
+    },
+    "B: 3D ResNet": {
+      "threshold": 0.6943026781082153,
+      "native_shapes": {
+        "layer2": [
+          16,
+          8,
+          8
+        ],
+        "layer3": [
+          8,
+          4,
+          4
+        ],
+        "layer4": [
+          4,
+          2,
+          2
+        ]
+      },
+      "sanity_spearman_trained_vs_random_layer3_mean": 0.015042940285751082,
+      "methods": {
+        "centre_prior": {
+          "concentration_median": 8.4,
+          "concentration_mean": 7.2336,
+          "hit_rate": 1.0,
+          "mass_in_mean": 0.2521,
+          "com_dist_mm_mean": 0.0,
+          "all_zero": 0.0
+        },
+        "gradcam_layer2": {
+          "concentration_median": 0.698,
+          "concentration_mean": 0.7992,
+          "hit_rate": 0.1333,
+          "mass_in_mean": 0.0763,
+          "com_dist_mm_mean": 5.2827,
+          "all_zero": 1.0
+        },
+        "gradcam_layer3": {
+          "concentration_median": 0.9714,
+          "concentration_mean": 2.0213,
+          "hit_rate": 0.3402,
+          "mass_in_mean": 0.1471,
+          "com_dist_mm_mean": 6.067,
+          "all_zero": 54.0
+        },
+        "gradcam_layer4": {
+          "concentration_median": 1.2166,
+          "concentration_mean": 1.1876,
+          "hit_rate": 0.1457,
+          "mass_in_mean": 0.0938,
+          "com_dist_mm_mean": 3.4915,
+          "all_zero": 0.0
+        },
+        "occlusion_8mm": {
+          "concentration_median": 1.3002,
+          "concentration_mean": 4.1581,
+          "hit_rate": 0.4768,
+          "mass_in_mean": 0.2687,
+          "com_dist_mm_mean": 2.6396,
+          "all_zero": 0.0
+        },
+        "random_weights_layer3": {
+          "concentration_median": 0.9649,
+          "concentration_mean": 1.1545,
+          "hit_rate": 0.1126,
+          "mass_in_mean": 0.0882,
+          "com_dist_mm_mean": 6.5104,
+          "all_zero": 0.0
+        }
+      }
+    }
+  },
+  "dependence": [
+    {
+      "model": "C: Hybrid",
+      "shuffled": "image",
+      "auc_original": 0.9072,
+      "auc_shuffled_mean": 0.5148,
+      "auc_shuffled_sd": 0.0495,
+      "auc_drop": 0.3923
+    },
+    {
+      "model": "C: Hybrid",
+      "shuffled": "table",
+      "auc_original": 0.9072,
+      "auc_shuffled_mean": 0.9075,
+      "auc_shuffled_sd": 0.0011,
+      "auc_drop": -0.0004
+    },
+    {
+      "model": "B: 3D ResNet",
+      "shuffled": "image",
+      "auc_original": 0.8979,
+      "auc_shuffled_mean": 0.5019,
+      "auc_shuffled_sd": 0.0512,
+      "auc_drop": 0.396
+    }
+  ],
+  "permutation_top5": [
+    {
+      "model": "C: Hybrid",
+      "feature": "hyperdense_fraction_pct",
+      "auc_drop_mean": 0.0006,
+      "auc_drop_sd": 0.0004
+    },
+    {
+      "model": "C: Hybrid",
+      "feature": "min_hu",
+      "auc_drop_mean": 0.0006,
+      "auc_drop_sd": 0.0008
+    },
+    {
+      "model": "C: Hybrid",
+      "feature": "median_hu",
+      "auc_drop_mean": 0.0005,
+      "auc_drop_sd": 0.0005
+    },
+    {
+      "model": "C: Hybrid",
+      "feature": "max_hu",
+      "auc_drop_mean": 0.0003,
+      "auc_drop_sd": 0.0003
+    },
+    {
+      "model": "C: Hybrid",
+      "feature": "mean_hu",
+      "auc_drop_mean": 0.0002,
+      "auc_drop_sd": 0.0004
+    }
+  ]
+}
