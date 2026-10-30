@@ -1,0 +1,8 @@
+
+Paired significance tests (test set):
+                         comparison  auc_a  auc_b  auc_diff  diff_ci95_low  diff_ci95_high  p_bootstrap  correct_only_a  correct_only_b  p_mcnemar_exact  n_boot_valid
+  C: Hybrid Net vs A: Random Forest  0.907  0.659     0.248          0.165           0.335        0.000              33              12            0.002          5000
+   C: Hybrid Net vs B: 3D ResNet-18  0.907  0.898     0.009         -0.021           0.037        0.589               9              11            0.824          5000
+B: 3D ResNet-18 vs A: Random Forest  0.898  0.659     0.239          0.149           0.332        0.000              35              12            0.001          5000
+
+Figures written to results/phase7_R/image/seed_45/figures

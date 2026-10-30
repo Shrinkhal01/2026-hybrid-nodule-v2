@@ -1,0 +1,35 @@
+
+====================================================================================================
+EXPLANATIONS ON 151 TEST NODULES  (concentration: 1 = flat map; centre_prior = trivial reference)
+====================================================================================================
+       model                method  concentration_median  concentration_mean  hit_rate  mass_in_mean  com_dist_mm_mean  all_zero
+B: 3D ResNet          centre_prior                 8.400               7.234     1.000         0.252             0.000     0.000
+B: 3D ResNet        gradcam_layer2                 0.857               0.940     0.213         0.099             5.667     1.000
+B: 3D ResNet        gradcam_layer3                 2.404               2.637     0.400         0.144             5.309     1.000
+B: 3D ResNet        gradcam_layer4                 1.266               1.202     0.146         0.092             3.215     0.000
+B: 3D ResNet         occlusion_8mm                 1.002               3.590     0.457         0.255             2.967     0.000
+B: 3D ResNet random_weights_layer3                 0.954               1.187     0.132         0.089             6.793     0.000
+   C: Hybrid          centre_prior                 8.400               7.234     1.000         0.252             0.000     0.000
+   C: Hybrid        gradcam_layer2                 1.506               2.020     0.391         0.138             5.669     0.000
+   C: Hybrid        gradcam_layer3                 1.897               2.720     0.448         0.132             5.565     6.000
+   C: Hybrid        gradcam_layer4                 1.217               1.165     0.146         0.092             3.912     0.000
+   C: Hybrid         occlusion_8mm                 3.942               6.708     0.616         0.298             2.552     0.000
+   C: Hybrid random_weights_layer3                 1.153               0.971     0.285         0.099             6.287     0.000
+
+Sanity check, rank correlation trained vs random-weights Grad-CAM (layer3): C: Hybrid 0.06, B: 3D ResNet 0.08
+
+Dependence (shuffle between nodules):
+       model shuffled  auc_original  auc_shuffled_mean  auc_shuffled_sd  auc_drop
+   C: Hybrid    image         0.905              0.577            0.060     0.327
+   C: Hybrid    table         0.905              0.875            0.006     0.030
+B: 3D ResNet    image         0.880              0.494            0.033     0.387
+
+Hybrid: top table features by permutation importance (AUC drop):
+    model            feature  auc_drop_mean  auc_drop_sd
+C: Hybrid      calcification          0.015        0.004
+C: Hybrid        diameter_mm          0.008        0.003
+C: Hybrid            texture          0.004        0.002
+C: Hybrid           skewness          0.002        0.001
+C: Hybrid solid_fraction_pct          0.001        0.001
+
+Saved to results/phase7_R/all/seed_43/explain
