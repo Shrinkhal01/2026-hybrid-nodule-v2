@@ -7,3 +7,6 @@ venv/
 .ipynb_checkpoints/
 # model checkpoints are ~133 MB each (GitHub limit: 100 MB per file); keep them out of git
 results/*.pth
+results/**/*.pth
+# training logs from scripts/train_on_gpu.sh (can be large)
+logs/

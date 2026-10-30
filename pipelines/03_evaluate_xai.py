@@ -45,7 +45,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.hybrid_net import HybridNoduleNet  # noqa: E402
 from pipelines.common import (  # noqa: E402
-    FEATURE_COLS, PROCESSED_DIR, RESULTS_DIR, NoduleDataset, TabularScaler, get_device, load_split,
+    FEATURE_COLS, FEATURE_SETS, PROCESSED_DIR, RESULTS_DIR, NoduleDataset, TabularScaler, get_device, load_split,
     make_loader, predict_probs, youden_threshold,
 )
 
@@ -234,21 +234,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     device = get_device()
 
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if ckpt.get("feature_cols") != FEATURE_COLS:
-        raise ValueError("checkpoint feature_cols differ from FEATURE_COLS")
+    cols = ckpt.get("feature_cols", FEATURE_COLS)  # Phase 7: 'all' (15) or 'image' (12)
+    if cols not in FEATURE_SETS.values():
+        raise ValueError(f"checkpoint feature_cols are not a known feature set: {cols}")
     scaler = TabularScaler.from_dict(ckpt["scaler"])
-    model = HybridNoduleNet()
+    model = HybridNoduleNet(n_tabular=len(cols))
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()
     log.info("Loaded %s (epoch %s, val_auc %.4f)", ckpt_path.name, ckpt.get("epoch"), ckpt.get("val_auc", float("nan")))
 
     val_df = load_split("val", args.processed_dir, args.limit, args.seed)
     test_df = load_split("test", args.processed_dir, args.limit, args.seed)
-    loader = lambda d: make_loader(NoduleDataset(d, scaler), 64, shuffle=False)  # noqa: E731
+    loader = lambda d: make_loader(NoduleDataset(d, scaler, feature_cols=cols), 64, shuffle=False)  # noqa: E731
     p_val = predict_probs(model, loader(val_df), device)
     thr, thr_src = load_threshold(args.results_dir, val_df["label"].to_numpy(int), p_val)
 
-    test_ds = NoduleDataset(test_df, scaler)
+    test_ds = NoduleDataset(test_df, scaler, feature_cols=cols)
     p_test = predict_probs(model, make_loader(test_ds, 64, shuffle=False), device)
     scored = test_df.assign(prob=p_test)
     log.info("Test: n=%d, threshold=%.4f (%s)", len(scored), thr, thr_src)

@@ -1,0 +1,73 @@
+{
+  "rf_feature_importances": {
+    "mean_hu": 0.04857743994439871,
+    "std_hu": 0.09169429038757075,
+    "min_hu": 0.10003531041904086,
+    "max_hu": 0.12513664598741808,
+    "median_hu": 0.05607632824887283,
+    "p25_hu": 0.04850340155249797,
+    "p75_hu": 0.06307737529234478,
+    "iqr_hu": 0.1347929580208997,
+    "skewness": 0.09395105219581949,
+    "kurtosis": 0.07986067542292621,
+    "solid_fraction_pct": 0.0761478886128731,
+    "hyperdense_fraction_pct": 0.08214663391533757
+  },
+  "pure_resnet": {
+    "best_epoch": 20,
+    "best_val_auc": 0.884717987804878
+  },
+  "hybrid_net": {
+    "best_epoch": 18,
+    "best_val_auc": 0.8894817073170731
+  },
+  "args": {
+    "processed_dir": "/scratch/mtech_shrinkhal/2026-hybrid-nodule-v2/data/processed",
+    "results_dir": "results/phase7_A/image/seed_46",
+    "models": [
+      "rf",
+      "resnet",
+      "hybrid"
+    ],
+    "epochs": 40,
+    "batch_size": 32,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "seed": 46,
+    "features": "image",
+    "num_workers": 4,
+    "pretrained": false,
+    "no_amp": false,
+    "allow_cpu": false,
+    "limit": null,
+    "n_boot": 1000
+  },
+  "device": "cuda",
+  "torch": "2.14.1+cu130",
+  "pos_weight": 1.2388535031847134,
+  "feature_set": "image",
+  "feature_cols": [
+    "mean_hu",
+    "std_hu",
+    "min_hu",
+    "max_hu",
+    "median_hu",
+    "p25_hu",
+    "p75_hu",
+    "iqr_hu",
+    "skewness",
+    "kurtosis",
+    "solid_fraction_pct",
+    "hyperdense_fraction_pct"
+  ],
+  "thresholds": {
+    "A: Balanced Random Forest (tabular)": 0.6019663576010723,
+    "B: Pure 3D ResNet-18 (image only)": 0.3242354094982147,
+    "C: Hybrid Net (image + radiomics)": 0.45084288716316223
+  },
+  "split_sizes": {
+    "train": 703,
+    "val": 146,
+    "test": 151
+  }
+}
