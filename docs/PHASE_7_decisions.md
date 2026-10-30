@@ -85,3 +85,19 @@ test set, and a CPU end-to-end run of `scripts/train_on_gpu.sh` on 26 sample nod
 - Same config re-run 3× with seed 42 (Run 1, `phase7_rerun_seed42`, `_b`): Hybrid 0.912 / 0.930 / 0.919, threshold 0.706 / 0.827 / 0.520 → GPU runs are not bit-reproducible.
 - Reading (facts): the RF's score comes almost entirely from the 3 ratings; the Hybrid's does not (its drop is within the control's noise); the Hybrid with ratings (0.915) stays far below a logistic regression on the ratings alone (0.969).
 - Hypothesis, NOT MEASURED: the CNN branch memorises the training set (train loss 0.11), so the network has little pressure to use the tabular branch ("modality imbalance").
+
+## Step R: measure the explanations on all test nodules (BOARD)
+
+Part 2 judged Grad-CAM on 4 hand-picked cases. Step R scores every map on all 151 test nodules
+(`pipelines/05_explain_eval.py`, summary over seeds: `scripts/aggregate_explain.py`).
+
+| Used | Why | Rejected alternative | Number that justified it |
+|---|---|---|---|
+| **B: Ball mask** = sphere with the radiologists' mean diameter at the patch centre | patches are centred on the nodule (step S) → a cheap, checkable target; diameter only draws the target, no model sees it here | pylidc contour masks (needs aligning LUNA22 patches to scan coordinates) | `tests/test_xai_metrics.py`: a 10 mm ball fills **1.7%** of the cube (523.6 mm³) |
+| **Concentration** = mass on the nodule / volume share of the nodule | 1.0 = a flat map, so "better than nothing" has a fixed line | Part 2's "mass in the central 16³ cube" (ignores nodule size) | Part 2 maps: 0.14–0.17 vs 0.125 → about **1.2×** a flat map |
+| **Pointing game** (hottest voxel on the nodule ± 2 mm) | standard, easy to explain | IoU of a thresholded map (needs a threshold choice) | NOT MEASURED until the GPU run |
+| **Centre prior** as a reference | nodules are always centred → "always look at the centre" scores well without looking at anything | compare only with a flat map | centre prior on an 8 mm nodule: **8.6×** a flat map, hit = 100% |
+| **O: Occlusion**, 8 mm cube, stride 4 mm, filled with air (0 = −1000 HU) | measures what the model *needs*, not its gradients; resolution set by us, not by the layer | finer stride 2 (8× more forward passes) | 343 forward passes per nodule; CPU: ~1 min per nodule, GPU: seconds |
+| **A: Grad-CAM at layer2 / 3 / 4** | layer4 is only 4×2×2; finer layers might localise better | only layer4 (Part 2) | native shapes 16×8×8 / 8×4×4 / 4×2×2 for a 32³ input |
+| **R: Random-weights sanity check** (Adebayo et al. 2018) | if a map looks the same for an untrained network, it explains nothing | none | NOT MEASURED until the GPU run |
+| **D: Shuffle images / table rows between nodules**, 10 repeats; per-feature permutation | explains the half Grad-CAM can't see (the table branch), as an AUC drop | gate values only (show mixing, not reliance) | NOT MEASURED until the GPU run |
